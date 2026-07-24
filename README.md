@@ -16,6 +16,8 @@ React + Vite + TypeScript app that ranks today's MLB ballparks by home-run park 
 8. Opposing SP HR allowed / HR/9 from [MLB HR Allowed leaders](https://www.mlb.com/stats/pitching/home-runs-allowed)
 9. Score = batter quality × pitch-type matchup × pitcher HR/9 × park HR boost
 
+Player stats are cut off through the prior day (`statsAsOf`) so historical boards exclude same-day results.
+
 Server modules live under `server/` (`pipeline`, `mlb`, `savant`, `scoring`).
 
 ## Design system
