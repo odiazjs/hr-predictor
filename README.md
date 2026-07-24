@@ -39,9 +39,26 @@ npm run dev
 
 Open the local Vite URL. Dashboard calls `/api/hr-predictions`; Ballparks calls `/api/park-factors`.
 
+## Deploy (Render API + static frontend)
+
+Render web service:
+
+- **Build:** `npm install && npm run build`
+- **Start:** `npm start`
+- Env: `NPM_CONFIG_PRODUCTION=false` (Vite is needed at runtime for `vite preview`)
+
+If the UI is hosted separately, set this at **frontend build time**:
+
+```bash
+VITE_API_BASE_URL=https://hr-predictor-api.onrender.com
+```
+
+Local `npm run dev` leaves that unset and uses same-origin `/api`.
+
 ## Scripts
 
 - `npm run dev` — start Vite with API middleware
 - `npm run build` — typecheck and production build
+- `npm start` — production preview server (Render)
 - `npm run preview` — preview the build (API middleware included)
 - `npm run lint` — run Oxlint

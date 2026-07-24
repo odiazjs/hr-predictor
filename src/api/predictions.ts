@@ -1,4 +1,5 @@
 import type { HrPredictionsResponse } from '../types/predictions'
+import { apiUrl } from './baseUrl'
 import { todayInEastern } from './parkFactors'
 
 export async function fetchHrPredictions(options?: {
@@ -12,7 +13,7 @@ export async function fetchHrPredictions(options?: {
     topParks: String(topParks),
   })
 
-  const response = await fetch(`/api/hr-predictions?${params.toString()}`)
+  const response = await fetch(apiUrl(`/api/hr-predictions?${params.toString()}`))
   if (!response.ok) {
     let message = `Request failed (${response.status})`
     try {

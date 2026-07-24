@@ -11,13 +11,34 @@ import { fetchText } from './server/utils/http.ts'
 
 const PARK_SOURCE = 'https://www.ballparkpal.com/Park-Factors.php'
 
-type MiddlewareReq = { url?: string }
+type MiddlewareReq = {
+  url?: string
+  method?: string
+  headers?: Record<string, string | string[] | undefined>
+}
 type MiddlewareRes = {
   statusCode: number
   setHeader: (name: string, value: string) => void
-  end: (body: string) => void
+  end: (body?: string) => void
 }
 type Next = () => void
+
+function headerValue(
+  headers: MiddlewareReq['headers'],
+  name: string,
+): string | undefined {
+  const value = headers?.[name] ?? headers?.[name.toLowerCase()]
+  if (Array.isArray(value)) return value[0]
+  return value
+}
+
+function applyCors(req: MiddlewareReq, res: MiddlewareRes) {
+  const origin = headerValue(req.headers, 'origin') ?? '*'
+  res.setHeader('Access-Control-Allow-Origin', origin)
+  res.setHeader('Vary', 'Origin')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+}
 
 function sendJson(res: MiddlewareRes, status: number, body: unknown) {
   res.statusCode = status
@@ -28,6 +49,16 @@ function sendJson(res: MiddlewareRes, status: number, body: unknown) {
 function apiMiddleware() {
   return async (req: MiddlewareReq, res: MiddlewareRes, next: Next) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
+    const isApi = url.pathname.startsWith('/api/')
+
+    if (isApi) {
+      applyCors(req, res)
+      if ((req.method ?? 'GET').toUpperCase() === 'OPTIONS') {
+        res.statusCode = 204
+        res.end()
+        return
+      }
+    }
 
     if (url.pathname === '/api/park-factors') {
       const date = url.searchParams.get('date') ?? todayInEastern()

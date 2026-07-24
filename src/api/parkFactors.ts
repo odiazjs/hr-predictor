@@ -1,4 +1,5 @@
 import type { ParkFactorsResponse } from '../types/parkFactors'
+import { apiUrl } from './baseUrl'
 
 export function todayInEastern(): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -17,7 +18,9 @@ export function shiftIsoDate(isoDate: string, days: number): string {
 }
 
 export async function fetchParkFactors(date = todayInEastern()): Promise<ParkFactorsResponse> {
-  const response = await fetch(`/api/park-factors?date=${encodeURIComponent(date)}`)
+  const response = await fetch(
+    apiUrl(`/api/park-factors?date=${encodeURIComponent(date)}`),
+  )
 
   if (!response.ok) {
     let message = `Request failed (${response.status})`
