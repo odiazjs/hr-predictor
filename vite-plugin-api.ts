@@ -1,133 +1,20 @@
 import type { Plugin } from 'vite'
-import {
-  buildFallbackParksFromSchedule,
-  isParkFactorsPaywalled,
-} from './server/mlb/parkFallback.ts'
-import { fetchMlbSchedule } from './server/mlb/schedule.ts'
-import { parseParkFactorsHtml } from './server/parseParkFactors.ts'
-import { predictHomeRuns } from './server/pipeline/predictHomeRuns.ts'
-import { todayInEastern } from './server/utils/date.ts'
-import { fetchText } from './server/utils/http.ts'
-
-const PARK_SOURCE = 'https://www.ballparkpal.com/Park-Factors.php'
-
-type MiddlewareReq = {
-  url?: string
-  method?: string
-  headers?: Record<string, string | string[] | undefined>
-}
-type MiddlewareRes = {
-  statusCode: number
-  setHeader: (name: string, value: string) => void
-  end: (body?: string) => void
-}
-type Next = () => void
-
-function headerValue(
-  headers: MiddlewareReq['headers'],
-  name: string,
-): string | undefined {
-  const value = headers?.[name] ?? headers?.[name.toLowerCase()]
-  if (Array.isArray(value)) return value[0]
-  return value
-}
-
-function applyCors(req: MiddlewareReq, res: MiddlewareRes) {
-  const origin = headerValue(req.headers, 'origin') ?? '*'
-  res.setHeader('Access-Control-Allow-Origin', origin)
-  res.setHeader('Vary', 'Origin')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-}
-
-function sendJson(res: MiddlewareRes, status: number, body: unknown) {
-  res.statusCode = status
-  res.setHeader('Content-Type', 'application/json')
-  res.end(JSON.stringify(body))
-}
-
-function apiMiddleware() {
-  return async (req: MiddlewareReq, res: MiddlewareRes, next: Next) => {
-    const url = new URL(req.url ?? '/', 'http://localhost')
-    const isApi = url.pathname.startsWith('/api/')
-
-    if (isApi) {
-      applyCors(req, res)
-      if ((req.method ?? 'GET').toUpperCase() === 'OPTIONS') {
-        res.statusCode = 204
-        res.end()
-        return
-      }
-    }
-
-    if (url.pathname === '/api/park-factors') {
-      const date = url.searchParams.get('date') ?? todayInEastern()
-      const sourceUrl = `${PARK_SOURCE}?date=${encodeURIComponent(date)}`
-
-      try {
-        const html = await fetchText(sourceUrl)
-        if (isParkFactorsPaywalled(html)) {
-          const schedule = await fetchMlbSchedule(date)
-          const parks = buildFallbackParksFromSchedule(schedule, 10)
-          res.setHeader('Cache-Control', 'public, max-age=120')
-          sendJson(res, 200, {
-            date,
-            displayDate: null,
-            lastUpdated: null,
-            summary:
-              'Ballpark Pal day factors are currently gated. Showing seasonal venue HR priors as a fallback.',
-            sourceUrl,
-            parks,
-            fallback: true,
-          })
-          return
-        }
-
-        const payload = parseParkFactorsHtml(html, date, sourceUrl)
-        res.setHeader('Cache-Control', 'public, max-age=300')
-        sendJson(res, 200, payload)
-      } catch (error) {
-        sendJson(res, 500, {
-          error: error instanceof Error ? error.message : 'Failed to fetch park factors',
-          sourceUrl,
-        })
-      }
-      return
-    }
-
-    if (url.pathname === '/api/hr-predictions') {
-      const date = url.searchParams.get('date') ?? todayInEastern()
-      const topParks = Number(url.searchParams.get('topParks') ?? '5')
-
-      try {
-        const payload = await predictHomeRuns({
-          date,
-          topParks: Number.isFinite(topParks) ? topParks : 5,
-        })
-        res.setHeader('Cache-Control', 'public, max-age=120')
-        sendJson(res, 200, payload)
-      } catch (error) {
-        sendJson(res, 500, {
-          error:
-            error instanceof Error ? error.message : 'Failed to build HR predictions',
-          date,
-        })
-      }
-      return
-    }
-
-    next()
-  }
-}
+import { handleApiRequest } from './server/httpApi.ts'
 
 export function apiPlugin(): Plugin {
   return {
     name: 'hr-predictor-api',
     configureServer(server) {
-      server.middlewares.use(apiMiddleware())
+      server.middlewares.use(async (req, res, next) => {
+        const handled = await handleApiRequest(req, res)
+        if (!handled) next()
+      })
     },
     configurePreviewServer(server) {
-      server.middlewares.use(apiMiddleware())
+      server.middlewares.use(async (req, res, next) => {
+        const handled = await handleApiRequest(req, res)
+        if (!handled) next()
+      })
     },
   }
 }

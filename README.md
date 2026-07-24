@@ -44,8 +44,7 @@ Open the local Vite URL. Dashboard calls `/api/hr-predictions`; Ballparks calls 
 Render web service:
 
 - **Build:** `npm install && npm run build`
-- **Start:** `npm start`
-- Env: `NPM_CONFIG_PRODUCTION=false` (Vite is needed at runtime for `vite preview`)
+- **Start:** `npm start` (Node server for `/api/*` + `dist` static files)
 
 If the UI is hosted separately, set this at **frontend build time**:
 
