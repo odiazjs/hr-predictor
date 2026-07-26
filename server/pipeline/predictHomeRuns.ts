@@ -92,15 +92,74 @@ export interface HrPredictionsResponse {
   battersScored: number
   predictions: HrPrediction[]
   warnings: string[]
+  gamePk?: number
+  lineupFingerprint?: string
+  fromCacheHint?: boolean
+}
+
+export interface SlateGameSummary {
+  gamePk: number
+  matchup: string
+  stadium: string
+  venueId: number
+  status: string
+  homeTeam: string
+  awayTeam: string
+  homePitcherId: number | null
+  awayPitcherId: number | null
+  homePitcherName: string | null
+  awayPitcherName: string | null
+  hasLineups: boolean
+  batterCount: number
+  lineupFingerprint: string
+}
+
+export interface SlateScheduleResponse {
+  date: string
+  statsAsOf: string
+  season: number
+  games: SlateGameSummary[]
+}
+
+export async function listSlateGames(date: string): Promise<SlateScheduleResponse> {
+  const schedule = await fetchMlbSchedule(date)
+  return {
+    date,
+    statsAsOf: statsAsOfDate(date),
+    season: seasonFromDate(date),
+    games: schedule.map(toGameSummary),
+  }
 }
 
 export async function predictHomeRuns(options: {
   date: string
 }): Promise<HrPredictionsResponse> {
-  const date = options.date
+  const schedule = await fetchMlbSchedule(options.date)
+  return scoreGamesForDate(options.date, schedule)
+}
+
+export async function predictHomeRunsForGame(options: {
+  date: string
+  gamePk: number
+}): Promise<HrPredictionsResponse> {
+  const schedule = await fetchMlbSchedule(options.date)
+  const game = schedule.find((entry) => entry.gamePk === options.gamePk)
+  if (!game) {
+    throw new Error(`Game ${options.gamePk} not found on ${options.date}`)
+  }
+  const result = await scoreGamesForDate(options.date, [game])
+  return {
+    ...result,
+    gamePk: game.gamePk,
+    lineupFingerprint: lineupFingerprint(game),
+  }
+}
+
+async function scoreGamesForDate(
+  date: string,
+  games: MlbGame[],
+): Promise<HrPredictionsResponse> {
   const season = seasonFromDate(date)
-  // Exclude slate-day games so backtests / past boards aren't polluted by
-  // HRs and PAs that already happened on the selected date.
   const statsAsOf = statsAsOfDate(date)
   const warnings: string[] = []
   const today = todayInEastern()
@@ -111,20 +170,23 @@ export async function predictHomeRuns(options: {
     )
   }
 
-  warnings.push('Park factor is not used; scoring every confirmed lineup on the full MLB slate.')
+  warnings.push('Park factor is not used; scoring confirmed lineups only.')
 
-  const [schedule, swingMap, pitcherHrSeed] = await Promise.all([
-    fetchMlbSchedule(date),
-    fetchSwingPathMap(season, { endDate: statsAsOf }),
-    fetchPitcherHrAllowedMap(season, { endDate: statsAsOf }),
-  ])
-
-  if (schedule.length === 0) {
-    warnings.push('No MLB games found for this date')
+  if (games.length === 0) {
+    return {
+      date,
+      statsAsOf,
+      season,
+      generatedAt: new Date().toISOString(),
+      gamesConsidered: 0,
+      battersScored: 0,
+      predictions: [],
+      warnings: [...warnings, 'No MLB games found for this date'],
+    }
   }
 
   const pitcherIds = unique(
-    schedule.flatMap((game) => {
+    games.flatMap((game) => {
       const ids: number[] = []
       if (game.awayPitcher) ids.push(game.awayPitcher.id)
       if (game.homePitcher) ids.push(game.homePitcher.id)
@@ -133,13 +195,36 @@ export async function predictHomeRuns(options: {
   )
 
   const batterIds = unique(
-    schedule.flatMap((game) => [
+    games.flatMap((game) => [
       ...game.homeLineup.map((batter) => batter.id),
       ...game.awayLineup.map((batter) => batter.id),
     ]),
   )
 
-  const [arsenalEntries, pitcherHrMap, asOfStats, platoonMap] = await Promise.all([
+  // No confirmed lineups yet — skip heavy Statcast work.
+  if (batterIds.length === 0) {
+    for (const game of games) {
+      warnings.push(
+        `No confirmed lineups yet for ${game.awayTeam.abbreviation} @ ${game.homeTeam.abbreviation}`,
+      )
+    }
+    return {
+      date,
+      statsAsOf,
+      season,
+      generatedAt: new Date().toISOString(),
+      gamesConsidered: games.length,
+      battersScored: 0,
+      predictions: [],
+      warnings: unique(warnings),
+      gamePk: games.length === 1 ? games[0].gamePk : undefined,
+      lineupFingerprint: games.length === 1 ? lineupFingerprint(games[0]) : undefined,
+    }
+  }
+
+  const [swingMap, pitcherHrSeed, arsenalEntries, platoonMap] = await Promise.all([
+    fetchSwingPathMap(season, { endDate: statsAsOf }),
+    fetchPitcherHrAllowedMap(season, { endDate: statsAsOf }),
     Promise.all(
       pitcherIds.map(async (pitcherId) => {
         try {
@@ -154,31 +239,26 @@ export async function predictHomeRuns(options: {
         }
       }),
     ),
-    enrichPitcherHrAllowedMap(season, pitcherIds, pitcherHrSeed, {
-      endDate: statsAsOf,
-    }),
-    fetchAsOfPlayerStats({
-      season,
-      endDate: statsAsOf,
-      batterIds,
-      pitcherIds,
-    }),
     fetchBatterPlatoonSplitsMap(season, batterIds),
   ])
+
+  const pitcherHrMap = await enrichPitcherHrAllowedMap(season, pitcherIds, pitcherHrSeed, {
+    endDate: statsAsOf,
+  })
+
+  const asOfStats = await fetchAsOfPlayerStats({
+    season,
+    endDate: statsAsOf,
+    batterIds,
+    pitcherIds,
+  })
+
   const arsenals = new Map<number, PitcherArsenal | null>(arsenalEntries)
 
   if (batterIds.length > 0) {
     warnings.push(
       `MLB platoon splits loaded for ${platoonMap.size}/${batterIds.length} batters (vs LHP / vs RHP).`,
     )
-  }
-
-  const exitVeloMap = asOfStats.exitVelo
-  const expectedMap = asOfStats.expected
-  const batterPitchStats = asOfStats.batterPitchStats
-  const pitcherPitchStats = asOfStats.pitcherPitchStats
-
-  if (batterIds.length > 0) {
     warnings.push(
       `Date-bounded Statcast loaded for ${asOfStats.loadedBatters}/${batterIds.length} batters and ${asOfStats.loadedPitchers}/${pitcherIds.length} pitchers through ${statsAsOf}.`,
     )
@@ -189,9 +269,13 @@ export async function predictHomeRuns(options: {
     )
   }
 
+  const exitVeloMap = asOfStats.exitVelo
+  const expectedMap = asOfStats.expected
+  const batterPitchStats = asOfStats.batterPitchStats
+  const pitcherPitchStats = asOfStats.pitcherPitchStats
   const predictions: HrPrediction[] = []
 
-  for (const game of schedule) {
+  for (const game of games) {
     const sides: Array<{
       lineup: LineupPlayer[]
       team: string
@@ -358,10 +442,41 @@ export async function predictHomeRuns(options: {
     statsAsOf,
     season,
     generatedAt: new Date().toISOString(),
-    gamesConsidered: schedule.length,
+    gamesConsidered: games.length,
     battersScored: predictions.length,
     predictions,
     warnings: unique(warnings),
+    gamePk: games.length === 1 ? games[0].gamePk : undefined,
+    lineupFingerprint: games.length === 1 ? lineupFingerprint(games[0]) : undefined,
+  }
+}
+
+export function lineupFingerprint(game: MlbGame): string {
+  const ids = [
+    game.awayPitcher?.id ?? 0,
+    game.homePitcher?.id ?? 0,
+    ...game.awayLineup.map((batter) => batter.id),
+    ...game.homeLineup.map((batter) => batter.id),
+  ]
+  return ids.join('-')
+}
+
+function toGameSummary(game: MlbGame): SlateGameSummary {
+  return {
+    gamePk: game.gamePk,
+    matchup: `${game.awayTeam.abbreviation} @ ${game.homeTeam.abbreviation}`,
+    stadium: game.venueName,
+    venueId: game.venueId,
+    status: game.status,
+    homeTeam: game.homeTeam.abbreviation,
+    awayTeam: game.awayTeam.abbreviation,
+    homePitcherId: game.homePitcher?.id ?? null,
+    awayPitcherId: game.awayPitcher?.id ?? null,
+    homePitcherName: game.homePitcher?.fullName ?? null,
+    awayPitcherName: game.awayPitcher?.fullName ?? null,
+    hasLineups: game.homeLineup.length > 0 || game.awayLineup.length > 0,
+    batterCount: game.homeLineup.length + game.awayLineup.length,
+    lineupFingerprint: lineupFingerprint(game),
   }
 }
 
@@ -372,7 +487,6 @@ function resolveBatSide(
 ): 'L' | 'R' {
   const declared = mlbBatSide ?? swing?.side
   if (declared === 'S') {
-    // Switch-hitters bat opposite the pitcher when hand is known.
     if (pitcherHand === 'L') return 'R'
     if (pitcherHand === 'R') return 'L'
     return 'R'

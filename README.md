@@ -36,7 +36,11 @@ npm install
 npm run dev
 ```
 
-Open the local Vite URL. Dashboard calls `/api/hr-predictions`; Ballparks calls `/api/park-factors`.
+Open the local Vite URL.
+
+- Dashboard loads `/api/schedule`, then scores `/api/hr-predictions/game` one game at a time (2 at once), caching each result in `localStorage`.
+- Reloads reuse cached games when the date, stats cutoff, and lineup fingerprint match.
+- Ballparks calls `/api/park-factors` only when that tab is opened.
 
 ## Deploy (Render API + static frontend)
 

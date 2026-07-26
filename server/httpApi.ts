@@ -4,7 +4,11 @@ import {
 } from './mlb/parkFallback.ts'
 import { fetchMlbSchedule } from './mlb/schedule.ts'
 import { parseParkFactorsHtml } from './parseParkFactors.ts'
-import { predictHomeRuns } from './pipeline/predictHomeRuns.ts'
+import {
+  listSlateGames,
+  predictHomeRuns,
+  predictHomeRunsForGame,
+} from './pipeline/predictHomeRuns.ts'
 import { todayInEastern } from './utils/date.ts'
 import { fetchText } from './utils/http.ts'
 
@@ -95,22 +99,63 @@ export async function handleApiRequest(
     return true
   }
 
-    if (url.pathname === '/api/hr-predictions') {
-      const date = url.searchParams.get('date') ?? todayInEastern()
+  if (url.pathname === '/api/schedule') {
+    const date = url.searchParams.get('date') ?? todayInEastern()
+    try {
+      const payload = await listSlateGames(date)
+      res.setHeader('Cache-Control', 'public, max-age=60')
+      sendJson(res, 200, payload)
+    } catch (error) {
+      sendJson(res, 500, {
+        error: error instanceof Error ? error.message : 'Failed to load schedule',
+        date,
+      })
+    }
+    return true
+  }
 
-      try {
-        const payload = await predictHomeRuns({ date })
-        res.setHeader('Cache-Control', 'public, max-age=120')
-        sendJson(res, 200, payload)
-      } catch (error) {
-        sendJson(res, 500, {
-          error:
-            error instanceof Error ? error.message : 'Failed to build HR predictions',
-          date,
-        })
-      }
+  if (url.pathname === '/api/hr-predictions/game') {
+    const date = url.searchParams.get('date') ?? todayInEastern()
+    const gamePk = Number(url.searchParams.get('gamePk'))
+    if (!Number.isFinite(gamePk) || gamePk <= 0) {
+      sendJson(res, 400, { error: 'gamePk is required' })
       return true
     }
+
+    try {
+      const payload = await predictHomeRunsForGame({ date, gamePk })
+      res.setHeader('Cache-Control', 'public, max-age=120')
+      sendJson(res, 200, payload)
+    } catch (error) {
+      sendJson(res, 500, {
+        error:
+          error instanceof Error ? error.message : 'Failed to score game predictions',
+        date,
+        gamePk,
+      })
+    }
+    return true
+  }
+
+  if (url.pathname === '/api/hr-predictions') {
+    const date = url.searchParams.get('date') ?? todayInEastern()
+    const gamePkParam = url.searchParams.get('gamePk')
+
+    try {
+      const payload = gamePkParam
+        ? await predictHomeRunsForGame({ date, gamePk: Number(gamePkParam) })
+        : await predictHomeRuns({ date })
+      res.setHeader('Cache-Control', 'public, max-age=120')
+      sendJson(res, 200, payload)
+    } catch (error) {
+      sendJson(res, 500, {
+        error:
+          error instanceof Error ? error.message : 'Failed to build HR predictions',
+        date,
+      })
+    }
+    return true
+  }
 
   sendJson(res, 404, { error: `Unknown API route: ${url.pathname}` })
   return true

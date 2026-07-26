@@ -80,4 +80,6 @@ export interface HrPredictionsResponse {
   battersScored: number
   predictions: HrPrediction[]
   warnings: string[]
+  gamePk?: number
+  lineupFingerprint?: string
 }

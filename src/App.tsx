@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { fetchParkFactors, shiftIsoDate, todayInEastern } from './api/parkFactors'
-import { fetchHrPredictions } from './api/predictions'
+import { loadPredictionsProgressively } from './api/predictions'
 import type { ParkFactor, ParkFactorsResponse } from './types/parkFactors'
 import type { HrPrediction, HrPredictionsResponse } from './types/predictions'
 import './App.css'
@@ -56,45 +56,79 @@ function App() {
   const [predictions, setPredictions] = useState<HrPredictionsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadProgress, setLoadProgress] = useState<{
+    gamesDone: number
+    gamesTotal: number
+    gamesCached: number
+  } | null>(null)
   const today = todayInEastern()
   const isToday = date === today
 
+  // Progressive game-by-game HR board with localStorage reuse.
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
+    setLoading(true)
+    setError(null)
+    setPredictions(null)
+    setLoadProgress(null)
 
-    async function load() {
-      setLoading(true)
-      setError(null)
+    void loadPredictionsProgressively({
+      date,
+      concurrency: 2,
+      signal: controller.signal,
+      onUpdate: (progress) => {
+        if (controller.signal.aborted) return
+        setLoadProgress({
+          gamesDone: progress.gamesDone,
+          gamesTotal: progress.gamesTotal,
+          gamesCached: progress.gamesCached,
+        })
+        setPredictions({
+          date: progress.date,
+          statsAsOf: progress.statsAsOf,
+          season: progress.season,
+          generatedAt: new Date().toISOString(),
+          gamesConsidered: progress.gamesTotal,
+          battersScored: progress.predictions.length,
+          predictions: progress.predictions,
+          warnings: progress.warnings,
+        })
+        setLoading(progress.loading)
+        setError(progress.error)
+      },
+    }).catch((err) => {
+      if (controller.signal.aborted) return
+      setError(err instanceof Error ? err.message : 'Unable to load predictions')
+      setLoading(false)
+    })
 
-      try {
-        const [parks, hr] = await Promise.all([
-          fetchParkFactors(date),
-          fetchHrPredictions({ date }),
-        ])
-        if (!cancelled) {
-          setParkData(parks)
-          setPredictions(hr)
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Unable to load predictions')
-        }
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
+    return () => {
+      controller.abort()
     }
+  }, [date])
 
-    void load()
+  // Ballpark factors are optional / separate from the HR board path.
+  useEffect(() => {
+    if (activeNav !== 'ballparks') return
+    let cancelled = false
+    void fetchParkFactors(date)
+      .then((parks) => {
+        if (!cancelled) setParkData(parks)
+      })
+      .catch(() => {
+        // Ballparks tab can show empty; don't block dashboard.
+      })
     return () => {
       cancelled = true
     }
-  }, [date])
+  }, [date, activeNav])
 
   const rankedParks = parkData?.parks ?? []
   const topParks = rankedParks.filter((park) => park.hrFactor > 0)
   const displayDate = formatLongDate(date)
   const topPredictions = predictions?.predictions.slice(0, 10) ?? []
   const topPick = topPredictions[0] ?? null
+  const hasPartialBoard = topPredictions.length > 0
 
   const summary = useMemo(() => {
     const topPark = rankedParks[0]
@@ -163,7 +197,7 @@ function App() {
             <p>
               {activeNav === 'ballparks'
                 ? `MLB park factors for ${displayDate}, ranked by home-run environment.`
-                : `HR board for ${displayDate}: parks → lineups → barrels/xSLG × swing path × pitch-type damage.`}
+                : `HR board for ${displayDate}: full-slate matchups scored game-by-game (cached in your browser).`}
             </p>
           </div>
           <div className="page-header__actions">
@@ -214,15 +248,23 @@ function App() {
         </header>
 
         {loading ? (
-          <p className="status-banner fade-up">Building HR board for {displayDate}…</p>
+          <p className="status-banner fade-up">
+            {loadProgress
+              ? `Scoring games ${loadProgress.gamesDone}/${loadProgress.gamesTotal}` +
+                (loadProgress.gamesCached
+                  ? ` · ${loadProgress.gamesCached} loaded from browser cache`
+                  : '') +
+                (hasPartialBoard ? ' · showing live top 10…' : '…')
+              : `Loading slate for ${displayDate}…`}
+          </p>
         ) : null}
-        {error ? (
+        {error && !hasPartialBoard ? (
           <p className="status-banner status-banner--error fade-up" role="alert">
             {error}
           </p>
         ) : null}
 
-        {!loading && !error && activeNav === 'ballparks' ? (
+        {activeNav === 'ballparks' ? (
           <BallparksView
             rankedParks={rankedParks}
             topParks={topParks}
@@ -233,13 +275,26 @@ function App() {
           />
         ) : null}
 
-        {!loading && !error && activeNav !== 'ballparks' ? (
+        {activeNav !== 'ballparks' && (hasPartialBoard || !loading) && !error ? (
           <DashboardView
             predictions={topPredictions}
             summary={summary}
             meta={predictions}
             displayDate={displayDate}
           />
+        ) : null}
+        {activeNav !== 'ballparks' && hasPartialBoard && error ? (
+          <>
+            <p className="status-banner status-banner--error fade-up" role="alert">
+              {error} (showing cached / partial board)
+            </p>
+            <DashboardView
+              predictions={topPredictions}
+              summary={summary}
+              meta={predictions}
+              displayDate={displayDate}
+            />
+          </>
         ) : null}
       </main>
     </div>
