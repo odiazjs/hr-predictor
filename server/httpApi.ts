@@ -95,26 +95,22 @@ export async function handleApiRequest(
     return true
   }
 
-  if (url.pathname === '/api/hr-predictions') {
-    const date = url.searchParams.get('date') ?? todayInEastern()
-    const topParks = Number(url.searchParams.get('topParks') ?? '5')
+    if (url.pathname === '/api/hr-predictions') {
+      const date = url.searchParams.get('date') ?? todayInEastern()
 
-    try {
-      const payload = await predictHomeRuns({
-        date,
-        topParks: Number.isFinite(topParks) ? topParks : 5,
-      })
-      res.setHeader('Cache-Control', 'public, max-age=120')
-      sendJson(res, 200, payload)
-    } catch (error) {
-      sendJson(res, 500, {
-        error:
-          error instanceof Error ? error.message : 'Failed to build HR predictions',
-        date,
-      })
+      try {
+        const payload = await predictHomeRuns({ date })
+        res.setHeader('Cache-Control', 'public, max-age=120')
+        sendJson(res, 200, payload)
+      } catch (error) {
+        sendJson(res, 500, {
+          error:
+            error instanceof Error ? error.message : 'Failed to build HR predictions',
+          date,
+        })
+      }
+      return true
     }
-    return true
-  }
 
   sendJson(res, 404, { error: `Unknown API route: ${url.pathname}` })
   return true

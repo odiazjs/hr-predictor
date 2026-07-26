@@ -12,8 +12,6 @@ export interface HrPrediction {
   matchup: string
   stadium: string
   venueId: number
-  parkHrFactor: number
-  parkHrLabel: string
   pitcherId: number | null
   pitcherName: string | null
   pitcherHand: 'L' | 'R' | null
@@ -51,7 +49,6 @@ export interface HrPrediction {
     swingPath: number
     arsenalMatch: number
     pitcherHrAllowed: number
-    parkBoost: number
     confidence: number
     notes: string[]
   }
@@ -71,17 +68,8 @@ export interface HrPredictionsResponse {
   statsAsOf: string
   season: number
   generatedAt: string
-  topParkCount: number
   gamesConsidered: number
   battersScored: number
-  parks: Array<{
-    stadium: string
-    venueId: string | null
-    gamePk: string | null
-    hrFactor: number
-    hrLabel: string
-    matchup: string | null
-  }>
   predictions: HrPrediction[]
   warnings: string[]
 }

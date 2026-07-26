@@ -4,14 +4,9 @@ import { todayInEastern } from './parkFactors'
 
 export async function fetchHrPredictions(options?: {
   date?: string
-  topParks?: number
 }): Promise<HrPredictionsResponse> {
   const date = options?.date ?? todayInEastern()
-  const topParks = options?.topParks ?? 5
-  const params = new URLSearchParams({
-    date,
-    topParks: String(topParks),
-  })
+  const params = new URLSearchParams({ date })
 
   const response = await fetch(apiUrl(`/api/hr-predictions?${params.toString()}`))
   if (!response.ok) {

@@ -1,8 +1,3 @@
-import { parseParkFactorsHtml, type ParkFactor } from '../parseParkFactors.ts'
-import {
-  buildFallbackParksFromSchedule,
-  isParkFactorsPaywalled,
-} from '../mlb/parkFallback.ts'
 import {
   enrichPitcherHrAllowedMap,
   fetchPitcherHrAllowedMap,
@@ -13,9 +8,6 @@ import { fetchPitcherArsenal, type PitcherArsenal } from '../savant/pitchArsenal
 import { fetchSwingPathMap, type SwingPathProfile } from '../savant/swingPath.ts'
 import { scoreBatterMatchup } from '../scoring/hrScore.ts'
 import { seasonFromDate, statsAsOfDate, todayInEastern } from '../utils/date.ts'
-import { fetchText } from '../utils/http.ts'
-
-const PARK_SOURCE = 'https://www.ballparkpal.com/Park-Factors.php'
 
 export interface HrPrediction {
   rank: number
@@ -31,8 +23,6 @@ export interface HrPrediction {
   matchup: string
   stadium: string
   venueId: number
-  parkHrFactor: number
-  parkHrLabel: string
   pitcherId: number | null
   pitcherName: string | null
   pitcherHand: 'L' | 'R' | null
@@ -70,7 +60,6 @@ export interface HrPrediction {
     swingPath: number
     arsenalMatch: number
     pitcherHrAllowed: number
-    parkBoost: number
     confidence: number
     notes: string[]
   }
@@ -90,27 +79,16 @@ export interface HrPredictionsResponse {
   statsAsOf: string
   season: number
   generatedAt: string
-  topParkCount: number
   gamesConsidered: number
   battersScored: number
-  parks: Array<{
-    stadium: string
-    venueId: string | null
-    gamePk: string | null
-    hrFactor: number
-    hrLabel: string
-    matchup: string | null
-  }>
   predictions: HrPrediction[]
   warnings: string[]
 }
 
 export async function predictHomeRuns(options: {
   date: string
-  topParks?: number
 }): Promise<HrPredictionsResponse> {
   const date = options.date
-  const topParkCount = options.topParks ?? 5
   const season = seasonFromDate(date)
   // Exclude slate-day games so backtests / past boards aren't polluted by
   // HRs and PAs that already happened on the selected date.
@@ -124,54 +102,31 @@ export async function predictHomeRuns(options: {
     )
   }
 
-  const [parkHtml, schedule, swingMap, pitcherHrSeed] = await Promise.all([
-    fetchText(`${PARK_SOURCE}?date=${encodeURIComponent(date)}`),
+  warnings.push('Park factor is not used; scoring every confirmed lineup on the full MLB slate.')
+
+  const [schedule, swingMap, pitcherHrSeed] = await Promise.all([
     fetchMlbSchedule(date),
     fetchSwingPathMap(season, { endDate: statsAsOf }),
     fetchPitcherHrAllowedMap(season, { endDate: statsAsOf }),
   ])
 
-  let topParks: ParkFactor[] = []
-
-  if (isParkFactorsPaywalled(parkHtml)) {
-    warnings.push(
-      'Ballpark Pal day factors unavailable (paywall/checkout). Using seasonal venue HR priors for top parks.',
-    )
-    topParks = buildFallbackParksFromSchedule(schedule, topParkCount)
-  } else {
-    const parkFactors = parseParkFactorsHtml(
-      parkHtml,
-      date,
-      `${PARK_SOURCE}?date=${encodeURIComponent(date)}`,
-    )
-    topParks = parkFactors.parks
-      .filter((park) => park.hrFactor > 0)
-      .slice(0, topParkCount)
-  }
-
-  if (topParks.length === 0) {
-    warnings.push('No HR parks available for this date; scoring full slate with neutral park prior')
-    topParks = buildFallbackParksFromSchedule(schedule, Math.max(topParkCount, schedule.length))
-  }
-
-  const selectedGames = selectGamesForParks(schedule, topParks)
-  if (selectedGames.length === 0) {
-    warnings.push('Could not match MLB games to top HR parks')
+  if (schedule.length === 0) {
+    warnings.push('No MLB games found for this date')
   }
 
   const pitcherIds = unique(
-    selectedGames.flatMap((entry) => {
+    schedule.flatMap((game) => {
       const ids: number[] = []
-      if (entry.game.awayPitcher) ids.push(entry.game.awayPitcher.id)
-      if (entry.game.homePitcher) ids.push(entry.game.homePitcher.id)
+      if (game.awayPitcher) ids.push(game.awayPitcher.id)
+      if (game.homePitcher) ids.push(game.homePitcher.id)
       return ids
     }),
   )
 
   const batterIds = unique(
-    selectedGames.flatMap((entry) => [
-      ...entry.game.homeLineup.map((batter) => batter.id),
-      ...entry.game.awayLineup.map((batter) => batter.id),
+    schedule.flatMap((game) => [
+      ...game.homeLineup.map((batter) => batter.id),
+      ...game.awayLineup.map((batter) => batter.id),
     ]),
   )
 
@@ -220,7 +175,7 @@ export async function predictHomeRuns(options: {
 
   const predictions: HrPrediction[] = []
 
-  for (const { game, park } of selectedGames) {
+  for (const game of schedule) {
     const sides: Array<{
       lineup: LineupPlayer[]
       team: string
@@ -270,7 +225,6 @@ export async function predictHomeRuns(options: {
           pitcherPitchStats: pitcherStats,
           batterPitchStats: batterStats,
           pitcherHrAllowed: pitcherHr,
-          parkHrFactor: park.hrFactor,
           batSide,
         })
 
@@ -316,10 +270,8 @@ export async function predictHomeRuns(options: {
           battingOrder: batter.battingOrder,
           gamePk: game.gamePk,
           matchup: `${game.awayTeam.abbreviation} @ ${game.homeTeam.abbreviation}`,
-          stadium: park.stadium,
+          stadium: game.venueName,
           venueId: game.venueId,
-          parkHrFactor: park.hrFactor,
-          parkHrLabel: park.hrLabel,
           pitcherId: side.pitcher?.id ?? null,
           pitcherName: side.pitcher?.fullName ?? null,
           pitcherHand: arsenal?.pitchHand ?? null,
@@ -371,49 +323,11 @@ export async function predictHomeRuns(options: {
     statsAsOf,
     season,
     generatedAt: new Date().toISOString(),
-    topParkCount: topParks.length,
-    gamesConsidered: selectedGames.length,
+    gamesConsidered: schedule.length,
     battersScored: predictions.length,
-    parks: topParks.map((park) => ({
-      stadium: park.stadium,
-      venueId: park.venueId,
-      gamePk: park.gamePk,
-      hrFactor: park.hrFactor,
-      hrLabel: park.hrLabel,
-      matchup: park.matchup,
-    })),
     predictions,
     warnings: unique(warnings),
   }
-}
-
-function selectGamesForParks(
-  schedule: MlbGame[],
-  topParks: ParkFactor[],
-): Array<{ game: MlbGame; park: ParkFactor }> {
-  const selected: Array<{ game: MlbGame; park: ParkFactor }> = []
-  const usedGamePks = new Set<number>()
-
-  for (const park of topParks) {
-    let game: MlbGame | undefined
-
-    if (park.gamePk) {
-      game = schedule.find((entry) => String(entry.gamePk) === park.gamePk)
-    }
-
-    if (!game && park.venueId) {
-      game = schedule.find(
-        (entry) =>
-          String(entry.venueId) === park.venueId && !usedGamePks.has(entry.gamePk),
-      )
-    }
-
-    if (!game) continue
-    usedGamePks.add(game.gamePk)
-    selected.push({ game, park })
-  }
-
-  return selected
 }
 
 function resolveBatSide(swing: SwingPathProfile | null): 'L' | 'R' {

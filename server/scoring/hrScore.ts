@@ -11,7 +11,6 @@ export interface ScoreBreakdown {
   swingPath: number
   arsenalMatch: number
   pitcherHrAllowed: number
-  parkBoost: number
   confidence: number
   notes: string[]
 }
@@ -24,7 +23,6 @@ export interface ScoreInput {
   pitcherPitchStats: Map<string, PitchTypeDamage> | null
   batterPitchStats: Map<string, PitchTypeDamage> | null
   pitcherHrAllowed: PitcherHrAllowed | null
-  parkHrFactor: number
   batSide: 'L' | 'R'
 }
 
@@ -50,24 +48,15 @@ export function scoreBatterMatchup(input: ScoreInput): {
   })
 
   const pitcherHrAllowed = scorePitcherHrAllowed(input.pitcherHrAllowed, notes)
-
-  const parkBoost = clamp((input.parkHrFactor + 20) / 50, 0, 1) * 100
-  if (input.parkHrFactor >= 15) {
-    notes.push(`Elite park HR environment (${formatSigned(input.parkHrFactor)}%)`)
-  } else if (input.parkHrFactor >= 5) {
-    notes.push(`Favorable park HR environment (${formatSigned(input.parkHrFactor)}%)`)
-  }
-
   const confidence = computeConfidence(input, arsenalPitches)
 
-  // Pitcher HR/9 is a major but not dominant lever:
-  // high weight, still below batter quality + pitch-type matchup.
+  // Matchup-only model (no park factor):
+  // batter quality + pitch-type damage + pitcher HR/9 + extra power.
   const score =
-    batterQuality * 0.3 +
-    arsenalMatch * 0.27 +
-    pitcherHrAllowed * 0.18 +
-    parkBoost * 0.15 +
-    powerSkill * 0.1
+    batterQuality * 0.35 +
+    arsenalMatch * 0.3 +
+    pitcherHrAllowed * 0.2 +
+    powerSkill * 0.15
 
   return {
     score: round1(score),
@@ -77,7 +66,6 @@ export function scoreBatterMatchup(input: ScoreInput): {
       swingPath: round1(swingPath),
       arsenalMatch: round1(arsenalMatch),
       pitcherHrAllowed: round1(pitcherHrAllowed),
-      parkBoost: round1(parkBoost),
       confidence: round1(confidence),
       notes,
     },
@@ -375,6 +363,3 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10
 }
 
-function formatSigned(value: number): string {
-  return `${value >= 0 ? '+' : ''}${value}`
-}

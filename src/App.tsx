@@ -69,7 +69,7 @@ function App() {
       try {
         const [parks, hr] = await Promise.all([
           fetchParkFactors(date),
-          fetchHrPredictions({ date, topParks: 5 }),
+          fetchHrPredictions({ date }),
         ])
         if (!cancelled) {
           setParkData(parks)
@@ -93,7 +93,7 @@ function App() {
   const rankedParks = parkData?.parks ?? []
   const topParks = rankedParks.filter((park) => park.hrFactor > 0)
   const displayDate = formatLongDate(date)
-  const topPredictions = predictions?.predictions.slice(0, 25) ?? []
+  const topPredictions = predictions?.predictions.slice(0, 50) ?? []
   const topPick = topPredictions[0] ?? null
 
   const summary = useMemo(() => {
@@ -109,15 +109,20 @@ function App() {
       rankedParks.length === 0
         ? 0
         : rankedParks.reduce((sum, park) => sum + park.hrFactor, 0) / rankedParks.length
+    const avgScore =
+      topPredictions.length === 0
+        ? 0
+        : topPredictions.reduce((sum, row) => sum + row.score, 0) / topPredictions.length
 
     return {
       topPark,
       warmest,
       avgHr,
+      avgScore,
       positiveCount: topParks.length,
       topPick,
     }
-  }, [rankedParks, topParks.length, topPick])
+  }, [rankedParks, topParks.length, topPick, topPredictions])
 
   return (
     <div className="app-shell">
@@ -252,6 +257,7 @@ function DashboardView({
     topPark?: ParkFactor
     warmest?: ParkFactor
     avgHr: number
+    avgScore: number
     positiveCount: number
     topPick: HrPrediction | null
   }
@@ -279,10 +285,10 @@ function DashboardView({
           <div className="stat-card__icon stat-card__icon--success">
             <StadiumIcon />
           </div>
-          <div className="stat-card__label">Top HR Park</div>
-          <div className="stat-card__value">{summary.topPark?.stadium ?? '—'}</div>
+          <div className="stat-card__label">Stadium</div>
+          <div className="stat-card__value">{summary.topPick?.stadium ?? '—'}</div>
           <div className="stat-card__meta">
-            {summary.topPark ? `${summary.topPark.hrLabel} · ${summary.topPark.matchup}` : 'No games'}
+            {summary.topPick?.matchup ?? 'Full slate · no park factor'}
           </div>
           <div className="stat-card__bar stat-card__bar--success" />
         </article>
@@ -294,7 +300,7 @@ function DashboardView({
           <div className="stat-card__label">Games Scored</div>
           <div className="stat-card__value">{meta?.gamesConsidered ?? 0}</div>
           <div className="stat-card__meta">
-            {meta?.battersScored ?? 0} batters across top {meta?.topParkCount ?? 0} parks
+            {meta?.battersScored ?? 0} batters across the full slate
           </div>
           <div className="stat-card__bar stat-card__bar--warning" />
         </article>
@@ -303,11 +309,8 @@ function DashboardView({
           <div className="stat-card__icon stat-card__icon--highlight">
             <WeatherIcon />
           </div>
-          <div className="stat-card__label">Avg Park HR Factor</div>
-          <div className="stat-card__value">
-            {summary.avgHr >= 0 ? '+' : ''}
-            {summary.avgHr.toFixed(1)}%
-          </div>
+          <div className="stat-card__label">Avg Top-50 Score</div>
+          <div className="stat-card__value">{summary.avgScore.toFixed(1)}</div>
           <div className="stat-card__meta">{displayDate}</div>
           <div className="stat-card__bar stat-card__bar--highlight" />
         </article>
@@ -319,7 +322,8 @@ function DashboardView({
             <div>
               <h2 className="card__title">Most Likely HR Batters</h2>
               <p className="card__subtitle">
-                Ranked by barrels/xSLG × swing path × pitch-type damage × park HR factor
+                Ranked by barrels/xSLG × swing path × pitch-type damage × pitcher HR/9 (no park
+                factor)
                 {meta?.statsAsOf
                   ? ` · barrels/xSLG/pitch-types/HR9 through ${meta.statsAsOf} (excludes this slate’s games)`
                   : ''}
@@ -330,7 +334,7 @@ function DashboardView({
           <div className="card__body card__body--flush">
             {predictions.length === 0 ? (
               <p className="status-banner">
-                No predictions yet — lineups may still be unconfirmed for the top parks.
+                No predictions yet — lineups may still be unconfirmed for today’s slate.
               </p>
             ) : (
               <table className="data-table">
@@ -343,7 +347,7 @@ function DashboardView({
                     <th>Swing Path</th>
                     <th>vs Pitcher</th>
                     <th>Pitcher HR</th>
-                    <th>Park</th>
+                    <th>Stadium</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -599,10 +603,8 @@ function PredictionRow({ prediction }: { prediction: HrPrediction }) {
       </td>
       <td>
         <div className="park-cell">
-          <strong className={`metric metric--${factorTone(prediction.parkHrFactor)}`}>
-            {prediction.parkHrLabel}
-          </strong>
-          <span>{prediction.stadium}</span>
+          <strong>{prediction.stadium}</strong>
+          <span>{prediction.matchup}</span>
         </div>
       </td>
     </tr>
@@ -638,7 +640,7 @@ function TopPickDetail({ prediction }: { prediction: HrPrediction }) {
             <p className="detail-kicker">HR Score</p>
             <p className="detail-score">{prediction.score.toFixed(1)}</p>
             <p className="detail-note">
-              Confidence {prediction.breakdown.confidence.toFixed(0)} · Park {prediction.parkHrLabel}
+              Confidence {prediction.breakdown.confidence.toFixed(0)} · {prediction.matchup}
             </p>
           </div>
         </div>
