@@ -1,3 +1,7 @@
+import type {
+  BatterPlatoonSplits,
+  HandSplit,
+} from '../mlb/batterPlatoonSplits.ts'
 import type { PitcherHrAllowed } from '../mlb/pitcherHrAllowed.ts'
 import type { PitcherArsenal, ArsenalPitch } from '../savant/pitchArsenal.ts'
 import type { ExitVeloProfile } from '../savant/exitVelo.ts'
@@ -6,11 +10,11 @@ import type { PitchTypeDamage } from '../savant/pitchArsenalStats.ts'
 import type { SwingPathProfile } from '../savant/swingPath.ts'
 
 export interface ScoreBreakdown {
-  batterQuality: number
   powerSkill: number
   swingPath: number
   arsenalMatch: number
   pitcherHrAllowed: number
+  platoonSplit: number
   confidence: number
   notes: string[]
 }
@@ -23,7 +27,9 @@ export interface ScoreInput {
   pitcherPitchStats: Map<string, PitchTypeDamage> | null
   batterPitchStats: Map<string, PitchTypeDamage> | null
   pitcherHrAllowed: PitcherHrAllowed | null
+  platoon: BatterPlatoonSplits | null
   batSide: 'L' | 'R'
+  pitcherHand: 'L' | 'R' | null
 }
 
 export function scoreBatterMatchup(input: ScoreInput): {
@@ -34,7 +40,6 @@ export function scoreBatterMatchup(input: ScoreInput): {
 
   const swingPath = scoreSwingPath(input.swing, notes)
   const powerSkill = scorePowerSkill(input.exitVelo, input.expected, notes)
-  const batterQuality = swingPath * 0.4 + powerSkill * 0.6
 
   const arsenalPitches = relevantPitches(input.arsenal, input.batSide)
   const arsenalMatch = scoreArsenalMatch({
@@ -48,28 +53,101 @@ export function scoreBatterMatchup(input: ScoreInput): {
   })
 
   const pitcherHrAllowed = scorePitcherHrAllowed(input.pitcherHrAllowed, notes)
+  const platoonSplit = scorePlatoonSplit({
+    platoon: input.platoon,
+    batSide: input.batSide,
+    pitcherHand: input.pitcherHand,
+    notes,
+  })
   const confidence = computeConfidence(input, arsenalPitches)
 
-  // Matchup-only model (no park factor):
-  // batter quality + pitch-type damage + pitcher HR/9 + extra power.
+  // pitch-type 35% · pitcher HR/9 25% · platoon splits 25% · power 15%
   const score =
-    batterQuality * 0.35 +
-    arsenalMatch * 0.3 +
-    pitcherHrAllowed * 0.2 +
+    arsenalMatch * 0.35 +
+    pitcherHrAllowed * 0.25 +
+    platoonSplit * 0.25 +
     powerSkill * 0.15
 
   return {
     score: round1(score),
     breakdown: {
-      batterQuality: round1(batterQuality),
       powerSkill: round1(powerSkill),
       swingPath: round1(swingPath),
       arsenalMatch: round1(arsenalMatch),
       pitcherHrAllowed: round1(pitcherHrAllowed),
+      platoonSplit: round1(platoonSplit),
       confidence: round1(confidence),
       notes,
     },
   }
+}
+
+/**
+ * How well the batter hits the opposing pitcher hand (MLB vs LHP / vs RHP splits).
+ * Opposite-hand matchups (L vs RHP, R vs LHP) get an extra boost when the split is strong.
+ */
+function scorePlatoonSplit(args: {
+  platoon: BatterPlatoonSplits | null
+  batSide: 'L' | 'R'
+  pitcherHand: 'L' | 'R' | null
+  notes: string[]
+}): number {
+  const { platoon, batSide, pitcherHand, notes } = args
+
+  if (!pitcherHand) {
+    notes.push('Pitcher hand unknown; used neutral platoon prior')
+    return 50
+  }
+
+  const split: HandSplit | null =
+    pitcherHand === 'L' ? (platoon?.vsLhp ?? null) : (platoon?.vsRhp ?? null)
+
+  if (!split || split.plateAppearances < 20) {
+    notes.push(
+      `Thin vs ${pitcherHand}HP split sample; used ${
+        batSide !== pitcherHand ? 'favorable-platoon' : 'same-side'
+      } prior`,
+    )
+    // Soft prior: opposite-hand matchups slightly above neutral.
+    return batSide !== pitcherHand ? 58 : 45
+  }
+
+  const hrPerPa = split.plateAppearances > 0 ? split.homeRuns / split.plateAppearances : 0
+  const slgScore = clamp01((split.slg - 0.32) / 0.35) * 55
+  const opsScore = clamp01((split.ops - 0.65) / 0.4) * 25
+  const hrScore = clamp01((hrPerPa - 0.02) / 0.06) * 20
+  let score = clamp(slgScore + opsScore + hrScore, 0, 100)
+
+  const isOpposite = batSide !== pitcherHand
+  if (isOpposite) {
+    score = clamp(score + 8, 0, 100)
+    if (split.slg >= 0.5 || hrPerPa >= 0.05) {
+      notes.push(
+        `Strong ${batSide}HB vs ${pitcherHand}HP split (SLG ${split.slg.toFixed(3)}, ${split.homeRuns} HR / ${split.plateAppearances} PA)`,
+      )
+    } else {
+      notes.push(
+        `Opposite-hand matchup: ${batSide}HB vs ${pitcherHand}HP (SLG ${split.slg.toFixed(3)})`,
+      )
+    }
+  } else if (split.slg >= 0.52) {
+    notes.push(
+      `Same-side but productive vs ${pitcherHand}HP (SLG ${split.slg.toFixed(3)})`,
+    )
+  } else if (split.slg <= 0.38) {
+    notes.push(
+      `Soft same-side split vs ${pitcherHand}HP (SLG ${split.slg.toFixed(3)})`,
+    )
+  }
+
+  // Shrink tiny-but-above-threshold samples toward prior.
+  if (split.plateAppearances < 60) {
+    const weight = split.plateAppearances / 60
+    const prior = isOpposite ? 58 : 45
+    score = score * weight + prior * (1 - weight)
+  }
+
+  return score
 }
 
 /**
@@ -344,9 +422,15 @@ function computeConfidence(input: ScoreInput, pitches: ArsenalPitch[]): number {
     [...(input.pitcherPitchStats?.values() ?? [])].reduce((sum, pitch) => sum + pitch.pitches, 0)
   score += Math.min(12, pitchCount / 80)
 
-  if (input.batterPitchStats && input.batterPitchStats.size > 0) score += 8
-  if (input.pitcherPitchStats && input.pitcherPitchStats.size > 0) score += 8
-  if (input.pitcherHrAllowed && input.pitcherHrAllowed.inningsPitched >= 20) score += 10
+  if (input.batterPitchStats && input.batterPitchStats.size > 0) score += 6
+  if (input.pitcherPitchStats && input.pitcherPitchStats.size > 0) score += 6
+  if (input.pitcherHrAllowed && input.pitcherHrAllowed.inningsPitched >= 20) score += 8
+  if (input.pitcherHand && input.platoon) {
+    const split =
+      input.pitcherHand === 'L' ? input.platoon.vsLhp : input.platoon.vsRhp
+    if (split && split.plateAppearances >= 40) score += 10
+    else if (split && split.plateAppearances >= 20) score += 5
+  }
 
   return clamp(score, 0, 100)
 }

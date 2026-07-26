@@ -1,3 +1,4 @@
+import { fetchBatterPlatoonSplitsMap } from '../mlb/batterPlatoonSplits.ts'
 import {
   enrichPitcherHrAllowedMap,
   fetchPitcherHrAllowedMap,
@@ -31,6 +32,14 @@ export interface HrPrediction {
     homeRunsPer9: number | null
     inningsPitched: number | null
   }
+  platoon: {
+    vsHand: 'L' | 'R' | null
+    isOpposite: boolean | null
+    plateAppearances: number | null
+    homeRuns: number | null
+    slg: number | null
+    ops: number | null
+  }
   swing: {
     attackAngle: number | null
     swingTilt: number | null
@@ -55,11 +64,11 @@ export interface HrPrediction {
     hardHitPercent: number | null
   }>
   breakdown: {
-    batterQuality: number
     powerSkill: number
     swingPath: number
     arsenalMatch: number
     pitcherHrAllowed: number
+    platoonSplit: number
     confidence: number
     notes: string[]
   }
@@ -130,7 +139,7 @@ export async function predictHomeRuns(options: {
     ]),
   )
 
-  const [arsenalEntries, pitcherHrMap, asOfStats] = await Promise.all([
+  const [arsenalEntries, pitcherHrMap, asOfStats, platoonMap] = await Promise.all([
     Promise.all(
       pitcherIds.map(async (pitcherId) => {
         try {
@@ -154,8 +163,15 @@ export async function predictHomeRuns(options: {
       batterIds,
       pitcherIds,
     }),
+    fetchBatterPlatoonSplitsMap(season, batterIds),
   ])
   const arsenals = new Map<number, PitcherArsenal | null>(arsenalEntries)
+
+  if (batterIds.length > 0) {
+    warnings.push(
+      `MLB platoon splits loaded for ${platoonMap.size}/${batterIds.length} batters (vs LHP / vs RHP).`,
+    )
+  }
 
   const exitVeloMap = asOfStats.exitVelo
   const expectedMap = asOfStats.expected
@@ -215,7 +231,9 @@ export async function predictHomeRuns(options: {
         const exitVelo = exitVeloMap.get(batter.id) ?? null
         const expected = expectedMap.get(batter.id) ?? null
         const batterStats = batterPitchStats.get(batter.id) ?? null
-        const batSide = resolveBatSide(swing)
+        const platoon = platoonMap.get(batter.id) ?? null
+        const pitcherHand = arsenal?.pitchHand ?? null
+        const batSide = resolveBatSide(swing, platoon?.batSide, pitcherHand)
 
         const scored = scoreBatterMatchup({
           swing,
@@ -225,8 +243,17 @@ export async function predictHomeRuns(options: {
           pitcherPitchStats: pitcherStats,
           batterPitchStats: batterStats,
           pitcherHrAllowed: pitcherHr,
+          platoon,
           batSide,
+          pitcherHand,
         })
+
+        const vsSplit =
+          pitcherHand === 'L'
+            ? platoon?.vsLhp ?? null
+            : pitcherHand === 'R'
+              ? platoon?.vsRhp ?? null
+              : null
 
         const sidePitches =
           arsenal?.pitches.filter((pitch) => pitch.batSide === batSide) ??
@@ -274,11 +301,19 @@ export async function predictHomeRuns(options: {
           venueId: game.venueId,
           pitcherId: side.pitcher?.id ?? null,
           pitcherName: side.pitcher?.fullName ?? null,
-          pitcherHand: arsenal?.pitchHand ?? null,
+          pitcherHand,
           pitcherHr: {
             homeRuns: pitcherHr?.homeRuns ?? null,
             homeRunsPer9: pitcherHr ? round2(pitcherHr.homeRunsPer9) : null,
             inningsPitched: pitcherHr?.inningsPitched ?? null,
+          },
+          platoon: {
+            vsHand: pitcherHand,
+            isOpposite: pitcherHand ? batSide !== pitcherHand : null,
+            plateAppearances: vsSplit?.plateAppearances ?? null,
+            homeRuns: vsSplit?.homeRuns ?? null,
+            slg: vsSplit ? round3(vsSplit.slg) : null,
+            ops: vsSplit ? round3(vsSplit.ops) : null,
           },
           swing: {
             attackAngle: swing ? round1(swing.attackAngle) : null,
@@ -330,9 +365,20 @@ export async function predictHomeRuns(options: {
   }
 }
 
-function resolveBatSide(swing: SwingPathProfile | null): 'L' | 'R' {
-  if (!swing) return 'R'
-  if (swing.side === 'L') return 'L'
+function resolveBatSide(
+  swing: SwingPathProfile | null,
+  mlbBatSide: 'L' | 'R' | 'S' | undefined,
+  pitcherHand: 'L' | 'R' | null,
+): 'L' | 'R' {
+  const declared = mlbBatSide ?? swing?.side
+  if (declared === 'S') {
+    // Switch-hitters bat opposite the pitcher when hand is known.
+    if (pitcherHand === 'L') return 'R'
+    if (pitcherHand === 'R') return 'L'
+    return 'R'
+  }
+  if (declared === 'L') return 'L'
+  if (declared === 'R') return 'R'
   return 'R'
 }
 

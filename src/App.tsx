@@ -93,7 +93,7 @@ function App() {
   const rankedParks = parkData?.parks ?? []
   const topParks = rankedParks.filter((park) => park.hrFactor > 0)
   const displayDate = formatLongDate(date)
-  const topPredictions = predictions?.predictions.slice(0, 50) ?? []
+  const topPredictions = predictions?.predictions.slice(0, 10) ?? []
   const topPick = topPredictions[0] ?? null
 
   const summary = useMemo(() => {
@@ -309,7 +309,7 @@ function DashboardView({
           <div className="stat-card__icon stat-card__icon--highlight">
             <WeatherIcon />
           </div>
-          <div className="stat-card__label">Avg Top-50 Score</div>
+          <div className="stat-card__label">Avg Top-10 Score</div>
           <div className="stat-card__value">{summary.avgScore.toFixed(1)}</div>
           <div className="stat-card__meta">{displayDate}</div>
           <div className="stat-card__bar stat-card__bar--highlight" />
@@ -322,10 +322,9 @@ function DashboardView({
             <div>
               <h2 className="card__title">Most Likely HR Batters</h2>
               <p className="card__subtitle">
-                Ranked by barrels/xSLG × swing path × pitch-type damage × pitcher HR/9 (no park
-                factor)
+                Ranked by pitch-type matchup × platoon splits (L/R) × pitcher HR/9 × power
                 {meta?.statsAsOf
-                  ? ` · barrels/xSLG/pitch-types/HR9 through ${meta.statsAsOf} (excludes this slate’s games)`
+                  ? ` · inputs through ${meta.statsAsOf} (excludes this slate’s games)`
                   : ''}
               </p>
             </div>
@@ -344,7 +343,7 @@ function DashboardView({
                     <th>Batter</th>
                     <th>HR Score</th>
                     <th>Power</th>
-                    <th>Swing Path</th>
+                    <th>Platoon</th>
                     <th>vs Pitcher</th>
                     <th>Pitcher HR</th>
                     <th>Stadium</th>
@@ -559,14 +558,14 @@ function PredictionRow({ prediction }: { prediction: HrPrediction }) {
       </td>
       <td>
         <div className="park-cell">
-          <strong>
-            AA {prediction.swing.attackAngle ?? '—'}° ·{' '}
-            {prediction.swing.idealAttackAngleRate != null
-              ? `${Math.round(prediction.swing.idealAttackAngleRate * 100)}% ideal`
-              : 'n/a'}
+          <strong className={prediction.platoon.isOpposite ? 'metric metric--hot' : undefined}>
+            {prediction.batSide}HB vs {prediction.pitcherHand ?? '?'}HP
+            {prediction.platoon.isOpposite ? ' · opp' : ''}
           </strong>
           <span>
-            {prediction.swing.avgBatSpeed ?? '—'} mph · tilt {prediction.swing.swingTilt ?? '—'}°
+            {prediction.platoon.slg != null
+              ? `SLG ${prediction.platoon.slg.toFixed(3)} · ${prediction.platoon.homeRuns ?? 0} HR / ${prediction.platoon.plateAppearances ?? 0} PA`
+              : 'Split pending'}
           </span>
         </div>
       </td>
@@ -655,6 +654,16 @@ function TopPickDetail({ prediction }: { prediction: HrPrediction }) {
             <strong>{prediction.breakdown.arsenalMatch.toFixed(1)}</strong>
           </div>
           <div>
+            <span>Platoon split</span>
+            <strong>
+              {prediction.breakdown.platoonSplit.toFixed(1)}
+              <span className="inline-muted">
+                {' '}
+                ({prediction.batSide} vs {prediction.pitcherHand ?? '?'})
+              </span>
+            </strong>
+          </div>
+          <div>
             <span>Pitcher HR/9</span>
             <strong>
               {prediction.pitcherHr.homeRunsPer9?.toFixed(2) ?? '—'}
@@ -665,16 +674,16 @@ function TopPickDetail({ prediction }: { prediction: HrPrediction }) {
             </strong>
           </div>
           <div>
+            <span>vs-hand SLG</span>
+            <strong>{prediction.platoon.slg?.toFixed(3) ?? '—'}</strong>
+          </div>
+          <div>
             <span>Barrel%</span>
             <strong>{prediction.power.barrelPercent ?? '—'}%</strong>
           </div>
           <div>
             <span>xSLG</span>
             <strong>{prediction.power.xslg?.toFixed(3) ?? '—'}</strong>
-          </div>
-          <div>
-            <span>Swing path</span>
-            <strong>{prediction.breakdown.swingPath.toFixed(1)}</strong>
           </div>
           <div>
             <span>EV50</span>

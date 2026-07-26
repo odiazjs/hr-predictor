@@ -20,6 +20,14 @@ export interface HrPrediction {
     homeRunsPer9: number | null
     inningsPitched: number | null
   }
+  platoon: {
+    vsHand: 'L' | 'R' | null
+    isOpposite: boolean | null
+    plateAppearances: number | null
+    homeRuns: number | null
+    slg: number | null
+    ops: number | null
+  }
   swing: {
     attackAngle: number | null
     swingTilt: number | null
@@ -44,11 +52,11 @@ export interface HrPrediction {
     hardHitPercent: number | null
   }>
   breakdown: {
-    batterQuality: number
     powerSkill: number
     swingPath: number
     arsenalMatch: number
     pitcherHrAllowed: number
+    platoonSplit: number
     confidence: number
     notes: string[]
   }
