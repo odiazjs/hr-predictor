@@ -126,7 +126,7 @@ function App() {
   const rankedParks = parkData?.parks ?? []
   const topParks = rankedParks.filter((park) => park.hrFactor > 0)
   const displayDate = formatLongDate(date)
-  const topPredictions = predictions?.predictions.slice(0, 10) ?? []
+  const topPredictions = predictions?.predictions.slice(0, 20) ?? []
   const topPick = topPredictions[0] ?? null
   const hasPartialBoard = topPredictions.length > 0
 
@@ -254,7 +254,7 @@ function App() {
                 (loadProgress.gamesCached
                   ? ` · ${loadProgress.gamesCached} loaded from browser cache`
                   : '') +
-                (hasPartialBoard ? ' · showing live top 10…' : '…')
+                (hasPartialBoard ? ' · showing live top 20…' : '…')
               : `Loading slate for ${displayDate}…`}
           </p>
         ) : null}
@@ -364,7 +364,7 @@ function DashboardView({
           <div className="stat-card__icon stat-card__icon--highlight">
             <WeatherIcon />
           </div>
-          <div className="stat-card__label">Avg Top-10 Score</div>
+          <div className="stat-card__label">Avg Top-20 Score</div>
           <div className="stat-card__value">{summary.avgScore.toFixed(1)}</div>
           <div className="stat-card__meta">{displayDate}</div>
           <div className="stat-card__bar stat-card__bar--highlight" />
