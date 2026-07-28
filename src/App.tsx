@@ -46,7 +46,7 @@ function hrProgress(value: number): number {
 }
 
 function scoreProgress(score: number): number {
-  // score is expectedHrChance * 1000 (roughly 10–90 for typical boards)
+  // True weighted matchup score on 0–100.
   return Math.max(0, Math.min(100, Math.round(score)))
 }
 
@@ -390,8 +390,8 @@ function DashboardView({
             <div>
               <h2 className="card__title">Most Likely HR Batters</h2>
               <p className="card__subtitle">
-                Ranked by HR score (0–100 from expected chance tonight: matchup × projected PAs ×
-                durability; park + recent form included)
+                Ranked by weighted matchup score (0–100: arsenal 30% · platoon 22% · HR/9 18% ·
+                power 12% · park 10% · form 8%)
                 {meta?.statsAsOf
                   ? ` · inputs through ${meta.statsAsOf} (excludes this slate’s games)`
                   : ''}
@@ -745,8 +745,9 @@ function BatterDetail({ prediction }: { prediction: HrPrediction }) {
             <p className="detail-kicker">HR Score</p>
             <p className="detail-score">{prediction.score.toFixed(1)}</p>
             <p className="detail-note">
-              Matchup {prediction.matchupScore.toFixed(0)} · ~{prediction.projectedPa.toFixed(1)} PA
-              vs starter · Conf {prediction.breakdown.confidence.toFixed(0)}
+              ~{(prediction.expectedHrChance * 100).toFixed(1)}% exp. HR · ~
+              {prediction.projectedPa.toFixed(1)} PA vs starter · Conf{' '}
+              {prediction.breakdown.confidence.toFixed(0)}
             </p>
           </div>
         </div>

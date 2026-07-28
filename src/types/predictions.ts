@@ -1,6 +1,6 @@
 export interface HrPrediction {
   rank: number
-  /** Board rank key: expected HR chance scaled (expectedHrChance * 1000). */
+  /** Board score: weighted matchup quality (0–100). */
   score: number
   matchupScore: number
   expectedHrChance: number

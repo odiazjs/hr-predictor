@@ -15,7 +15,7 @@ import { seasonFromDate, statsAsOfDate, todayInEastern } from '../utils/date.ts'
 
 export interface HrPrediction {
   rank: number
-  /** Board rank key: expected HR chance scaled (expectedHrChance * 1000). */
+  /** Board score: weighted matchup quality (0–100). */
   score: number
   matchupScore: number
   expectedHrChance: number
@@ -487,7 +487,7 @@ async function scoreGamesForDate(
     }
   }
 
-  // Soft anti-stacking across batters facing the same starter.
+  // Soft anti-stacking on expected HR chance only (does not change 0–100 matchup score).
   const scaledChances = applyAntiStacking(
     predictions.map((prediction) => ({
       expectedHrChance: prediction.expectedHrChance,
@@ -497,11 +497,10 @@ async function scoreGamesForDate(
   predictions.forEach((prediction, index) => {
     const chance = scaledChances[index]
     prediction.expectedHrChance = round4(chance)
-    prediction.score = round1(chance * 1000)
     prediction.breakdown.expectedHrChance = round4(chance)
   })
 
-  predictions.sort((a, b) => b.expectedHrChance - a.expectedHrChance)
+  predictions.sort((a, b) => b.score - a.score)
   predictions.forEach((prediction, index) => {
     prediction.rank = index + 1
   })

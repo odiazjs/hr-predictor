@@ -50,7 +50,7 @@ export interface ScoreInput {
 }
 
 export function scoreBatterMatchup(input: ScoreInput): {
-  /** Rank key: expected HR chance tonight vs this starter (0–1). */
+  /** Board score: weighted matchup quality (0–100). */
   score: number
   matchupScore: number
   expectedHrChance: number
@@ -114,8 +114,8 @@ export function scoreBatterMatchup(input: ScoreInput): {
   notes.push(`Expected HR chance ${(expectedHrChance * 100).toFixed(1)}% (matchup ${round1(matchupScore)})`)
 
   return {
-    // Board ranks by expected chance; scale to a readable 0–100-ish score.
-    score: round1(expectedHrChance * 1000),
+    // Board score = weighted matchup quality on a true 0–100 scale.
+    score: round1(matchupScore),
     matchupScore: round1(matchupScore),
     expectedHrChance,
     breakdown: {
