@@ -29,6 +29,10 @@ const VENUE_HR_PRIOR: Record<number, number> = {
   31: -8, // Petco Park
 }
 
+export function venueHrPrior(venueId: number): number {
+  return VENUE_HR_PRIOR[venueId] ?? 0
+}
+
 export function buildFallbackParksFromSchedule(
   games: MlbGame[],
   topParks: number,

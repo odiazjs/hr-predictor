@@ -46,6 +46,7 @@ function hrProgress(value: number): number {
 }
 
 function scoreProgress(score: number): number {
+  // score is expectedHrChance * 1000 (roughly 10–90 for typical boards)
   return Math.max(0, Math.min(100, Math.round(score)))
 }
 
@@ -319,6 +320,18 @@ function DashboardView({
   meta: HrPredictionsResponse | null
   displayDate: string
 }) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+
+  const selectedPrediction = useMemo(() => {
+    if (predictions.length === 0) return null
+    const match = selectedKey
+      ? predictions.find(
+          (prediction) => predictionKey(prediction) === selectedKey,
+        )
+      : null
+    return match ?? summary.topPick ?? predictions[0] ?? null
+  }, [predictions, selectedKey, summary.topPick])
+
   return (
     <>
       <section className="stat-grid fade-up" aria-label="Slate summary">
@@ -343,7 +356,7 @@ function DashboardView({
           <div className="stat-card__label">Stadium</div>
           <div className="stat-card__value">{summary.topPick?.stadium ?? '—'}</div>
           <div className="stat-card__meta">
-            {summary.topPick?.matchup ?? 'Full slate · no park factor'}
+            {summary.topPick?.matchup ?? 'Full slate'}
           </div>
           <div className="stat-card__bar stat-card__bar--success" />
         </article>
@@ -377,10 +390,12 @@ function DashboardView({
             <div>
               <h2 className="card__title">Most Likely HR Batters</h2>
               <p className="card__subtitle">
-                Ranked by pitch-type matchup × platoon splits (L/R) × pitcher HR/9 × power
+                Ranked by HR score (0–100 from expected chance tonight: matchup × projected PAs ×
+                durability; park + recent form included)
                 {meta?.statsAsOf
                   ? ` · inputs through ${meta.statsAsOf} (excludes this slate’s games)`
                   : ''}
+                {' · click a batter for details'}
               </p>
             </div>
             <span className="badge badge--accent">{predictions.length} batters</span>
@@ -405,16 +420,26 @@ function DashboardView({
                   </tr>
                 </thead>
                 <tbody>
-                  {predictions.map((prediction) => (
-                    <PredictionRow key={`${prediction.gamePk}-${prediction.batterId}`} prediction={prediction} />
-                  ))}
+                  {predictions.map((prediction) => {
+                    const key = predictionKey(prediction)
+                    return (
+                      <PredictionRow
+                        key={key}
+                        prediction={prediction}
+                        selected={selectedPrediction
+                          ? predictionKey(selectedPrediction) === key
+                          : false}
+                        onSelect={() => setSelectedKey(key)}
+                      />
+                    )
+                  })}
                 </tbody>
               </table>
             )}
           </div>
         </article>
 
-        {summary.topPick ? <TopPickDetail prediction={summary.topPick} /> : null}
+        {selectedPrediction ? <BatterDetail prediction={selectedPrediction} /> : null}
       </section>
 
       {meta?.warnings?.length ? (
@@ -448,6 +473,10 @@ function DashboardView({
       </footer>
     </>
   )
+}
+
+function predictionKey(prediction: HrPrediction): string {
+  return `${prediction.gamePk}-${prediction.batterId}`
 }
 
 function BallparksView({
@@ -558,9 +587,29 @@ function BallparksView({
   )
 }
 
-function PredictionRow({ prediction }: { prediction: HrPrediction }) {
+function PredictionRow({
+  prediction,
+  selected,
+  onSelect,
+}: {
+  prediction: HrPrediction
+  selected: boolean
+  onSelect: () => void
+}) {
   return (
-    <tr>
+    <tr
+      className={selected ? 'is-selected' : undefined}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect()
+        }
+      }}
+      tabIndex={0}
+      role="button"
+      aria-pressed={selected}
+    >
       <td>
         <span className={`rank-pill${prediction.rank <= 3 ? ' rank-pill--top' : ''}`}>
           {prediction.rank}
@@ -665,7 +714,7 @@ function PredictionRow({ prediction }: { prediction: HrPrediction }) {
   )
 }
 
-function TopPickDetail({ prediction }: { prediction: HrPrediction }) {
+function BatterDetail({ prediction }: { prediction: HrPrediction }) {
   return (
     <aside className="card detail-card">
       <div className="card__header">
@@ -675,7 +724,9 @@ function TopPickDetail({ prediction }: { prediction: HrPrediction }) {
             {prediction.team} vs {prediction.pitcherName ?? 'TBD'} · {prediction.stadium}
           </p>
         </div>
-        <span className="badge badge--warning">Top pick</span>
+        <span className={`badge ${prediction.rank === 1 ? 'badge--warning' : 'badge--accent'}`}>
+          {prediction.rank === 1 ? 'Top pick' : `#${prediction.rank}`}
+        </span>
       </div>
       <div className="card__body detail-card__body">
         <div className="hr-gauge">
@@ -694,7 +745,8 @@ function TopPickDetail({ prediction }: { prediction: HrPrediction }) {
             <p className="detail-kicker">HR Score</p>
             <p className="detail-score">{prediction.score.toFixed(1)}</p>
             <p className="detail-note">
-              Confidence {prediction.breakdown.confidence.toFixed(0)} · {prediction.matchup}
+              Matchup {prediction.matchupScore.toFixed(0)} · ~{prediction.projectedPa.toFixed(1)} PA
+              vs starter · Conf {prediction.breakdown.confidence.toFixed(0)}
             </p>
           </div>
         </div>
@@ -716,6 +768,33 @@ function TopPickDetail({ prediction }: { prediction: HrPrediction }) {
                 {' '}
                 ({prediction.batSide} vs {prediction.pitcherHand ?? '?'})
               </span>
+            </strong>
+          </div>
+          <div>
+            <span>Recent form</span>
+            <strong>
+              {prediction.recentForm.formScore?.toFixed(0) ?? '—'}
+              <span className="inline-muted">
+                {' '}
+                ({prediction.recentForm.homeRuns ?? 0} HR / {prediction.recentForm.plateAppearances ?? 0} PA)
+              </span>
+            </strong>
+          </div>
+          <div>
+            <span>Durability</span>
+            <strong>
+              {prediction.durability.factor?.toFixed(2) ?? '—'}
+              <span className="inline-muted">
+                {' '}
+                (avg {prediction.durability.avgInnings ?? '—'} IP)
+              </span>
+            </strong>
+          </div>
+          <div>
+            <span>Park</span>
+            <strong>
+              {prediction.parkHrFactor >= 0 ? '+' : ''}
+              {prediction.parkHrFactor}%
             </strong>
           </div>
           <div>

@@ -369,10 +369,19 @@
 
 .data-table tbody tr {
   transition: background var(--duration-fast) var(--ease-out);
+  cursor: pointer;
 }
 
 .data-table tbody tr:hover {
   background: rgba(255, 255, 255, 0.02);
+}
+
+.data-table tbody tr.is-selected {
+  background: rgba(255, 196, 86, 0.08);
+}
+
+.data-table tbody tr.is-selected:hover {
+  background: rgba(255, 196, 86, 0.1);
 }
 
 .rank-pill {

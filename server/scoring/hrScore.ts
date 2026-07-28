@@ -2,6 +2,8 @@ import type {
   BatterPlatoonSplits,
   HandSplit,
 } from '../mlb/batterPlatoonSplits.ts'
+import type { BatterRecentForm } from '../mlb/batterRecentForm.ts'
+import type { PitcherDurability } from '../mlb/pitcherDurability.ts'
 import type { PitcherHrAllowed } from '../mlb/pitcherHrAllowed.ts'
 import type { PitcherArsenal, ArsenalPitch } from '../savant/pitchArsenal.ts'
 import type { ExitVeloProfile } from '../savant/exitVelo.ts'
@@ -9,12 +11,23 @@ import type { ExpectedStatsProfile } from '../savant/expectedStats.ts'
 import type { PitchTypeDamage } from '../savant/pitchArsenalStats.ts'
 import type { SwingPathProfile } from '../savant/swingPath.ts'
 
+const LEAGUE_HR_PER_9 = 1.2
+const LEAGUE_HR_PER_PA = 0.034
+/** Typical PA vs starter by batting order (1–9), before durability. */
+const PA_VS_STARTER_BY_ORDER = [0, 3.05, 2.85, 2.75, 2.65, 2.45, 2.25, 2.05, 1.85, 1.7]
+
 export interface ScoreBreakdown {
   powerSkill: number
   swingPath: number
   arsenalMatch: number
   pitcherHrAllowed: number
   platoonSplit: number
+  recentForm: number
+  parkBoost: number
+  matchupScore: number
+  durabilityFactor: number
+  projectedPa: number
+  expectedHrChance: number
   confidence: number
   notes: string[]
 }
@@ -28,12 +41,19 @@ export interface ScoreInput {
   batterPitchStats: Map<string, PitchTypeDamage> | null
   pitcherHrAllowed: PitcherHrAllowed | null
   platoon: BatterPlatoonSplits | null
+  recentForm: BatterRecentForm | null
+  durability: PitcherDurability | null
   batSide: 'L' | 'R'
   pitcherHand: 'L' | 'R' | null
+  battingOrder: number
+  parkHrFactor: number
 }
 
 export function scoreBatterMatchup(input: ScoreInput): {
+  /** Rank key: expected HR chance tonight vs this starter (0–1). */
   score: number
+  matchupScore: number
+  expectedHrChance: number
   breakdown: ScoreBreakdown
 } {
   const notes: string[] = []
@@ -59,27 +79,123 @@ export function scoreBatterMatchup(input: ScoreInput): {
     pitcherHand: input.pitcherHand,
     notes,
   })
+  const recentForm = scoreRecentFormComponent(input.recentForm, notes)
+  const parkBoost = scoreParkBoost(input.parkHrFactor, notes)
   const confidence = computeConfidence(input, arsenalPitches)
 
-  // pitch-type 35% · pitcher HR/9 25% · platoon splits 25% · power 15%
-  const score =
-    arsenalMatch * 0.35 +
-    pitcherHrAllowed * 0.25 +
-    platoonSplit * 0.25 +
-    powerSkill * 0.15
+  // Matchup quality (0–100): not the same as "most likely tonight".
+  const matchupScore =
+    arsenalMatch * 0.3 +
+    platoonSplit * 0.22 +
+    pitcherHrAllowed * 0.18 +
+    powerSkill * 0.12 +
+    recentForm * 0.08 +
+    parkBoost * 0.1
+
+  const durabilityFactor = input.durability?.durabilityFactor ?? 0.85
+  for (const note of input.durability?.notes ?? []) notes.push(note)
+
+  const order = clamp(Math.round(input.battingOrder || 5), 1, 9)
+  const basePa = PA_VS_STARTER_BY_ORDER[order] ?? 2.3
+  const projectedPa = round2(basePa * durabilityFactor)
+
+  // Convert matchup quality + opportunity into expected HR probability tonight.
+  const hrPerPa =
+    LEAGUE_HR_PER_PA *
+    (0.55 + (matchupScore / 100) * 0.95) *
+    (0.85 + (recentForm / 100) * 0.3) *
+    (0.9 + clamp(input.parkHrFactor, -20, 25) / 100)
+
+  const expectedHrChance = round4(1 - Math.pow(1 - clamp(hrPerPa, 0.005, 0.12), projectedPa))
+
+  notes.push(
+    `Projected ~${projectedPa.toFixed(1)} PA vs starter (order #${order}, durability ${durabilityFactor.toFixed(2)})`,
+  )
+  notes.push(`Expected HR chance ${(expectedHrChance * 100).toFixed(1)}% (matchup ${round1(matchupScore)})`)
 
   return {
-    score: round1(score),
+    // Board ranks by expected chance; scale to a readable 0–100-ish score.
+    score: round1(expectedHrChance * 1000),
+    matchupScore: round1(matchupScore),
+    expectedHrChance,
     breakdown: {
       powerSkill: round1(powerSkill),
       swingPath: round1(swingPath),
       arsenalMatch: round1(arsenalMatch),
       pitcherHrAllowed: round1(pitcherHrAllowed),
       platoonSplit: round1(platoonSplit),
+      recentForm: round1(recentForm),
+      parkBoost: round1(parkBoost),
+      matchupScore: round1(matchupScore),
+      durabilityFactor: round2(durabilityFactor),
+      projectedPa,
+      expectedHrChance,
       confidence: round1(confidence),
       notes,
     },
   }
+}
+
+/**
+ * Soft-cap expected HRs across a lineup vs the same starter so one
+ * fragile pitcher matchup cannot dominate the whole board.
+ */
+export function applyAntiStacking(
+  rows: Array<{ expectedHrChance: number; pitcherId: number | null }>,
+): number[] {
+  const byPitcher = new Map<number, number[]>()
+  rows.forEach((row, index) => {
+    if (!row.pitcherId) return
+    const list = byPitcher.get(row.pitcherId) ?? []
+    list.push(index)
+    byPitcher.set(row.pitcherId, list)
+  })
+
+  const scaled = rows.map((row) => row.expectedHrChance)
+  for (const indices of byPitcher.values()) {
+    if (indices.length < 3) continue
+    const total = indices.reduce((sum, index) => sum + scaled[index], 0)
+    // Typical starter allows ~0.5–0.9 HR; soft-cap shared expectation.
+    const softCap = 0.75
+    if (total <= softCap) continue
+    // Partial dampening so we don't crush everyone equally to noise.
+    const factor = softCap / total
+    const blend = 0.45 + factor * 0.55
+    for (const index of indices) {
+      scaled[index] = scaled[index] * blend
+    }
+  }
+  return scaled
+}
+
+function scoreRecentFormComponent(
+  form: BatterRecentForm | null,
+  notes: string[],
+): number {
+  if (!form || form.plateAppearances < 15) {
+    notes.push('Recent form sample thin; used neutral prior')
+    return 50
+  }
+  if (form.formScore >= 70) {
+    notes.push(
+      `Hot recent form (${form.homeRuns} HR, SLG ${form.slg.toFixed(3)} in last ~21 days)`,
+    )
+  } else if (form.formScore <= 35) {
+    notes.push(
+      `Cold recent form (SLG ${form.slg.toFixed(3)} in last ~21 days)`,
+    )
+  }
+  return form.formScore
+}
+
+function scoreParkBoost(parkHrFactor: number, notes: string[]): number {
+  const boost = clamp((parkHrFactor + 20) / 50, 0, 1) * 100
+  if (parkHrFactor >= 12) {
+    notes.push(`HR-friendly park (+${parkHrFactor}%)`)
+  } else if (parkHrFactor <= -6) {
+    notes.push(`HR-suppressing park (${parkHrFactor}%)`)
+  }
+  return boost
 }
 
 /**
@@ -108,7 +224,6 @@ function scorePlatoonSplit(args: {
         batSide !== pitcherHand ? 'favorable-platoon' : 'same-side'
       } prior`,
     )
-    // Soft prior: opposite-hand matchups slightly above neutral.
     return batSide !== pitcherHand ? 58 : 45
   }
 
@@ -140,7 +255,6 @@ function scorePlatoonSplit(args: {
     )
   }
 
-  // Shrink tiny-but-above-threshold samples toward prior.
   if (split.plateAppearances < 60) {
     const weight = split.plateAppearances / 60
     const prior = isOpposite ? 58 : 45
@@ -151,43 +265,40 @@ function scorePlatoonSplit(args: {
 }
 
 /**
- * Prefer HR/9 over raw HR totals so innings volume doesn't dominate.
- * League average ~1.1–1.3; 2.0+ is clearly HR-prone.
+ * Pitcher HR/9 with hard shrinkage to league average until ~50 IP.
  */
 function scorePitcherHrAllowed(
   profile: PitcherHrAllowed | null,
   notes: string[],
 ): number {
-  if (!profile || profile.inningsPitched < 10) {
-    notes.push('Pitcher HR-allowed sample thin/unavailable; used neutral prior')
+  if (!profile || profile.inningsPitched < 8) {
+    notes.push('Pitcher HR-allowed sample thin/unavailable; used league-average prior')
     return 50
   }
 
-  const hrPer9 = profile.homeRunsPer9
-  // Map roughly 0.7 (stingy) → 2.6 (gopher-prone) into 0..100
-  const rateScore = clamp01((hrPer9 - 0.7) / 1.9) * 100
+  const rawHr9 = profile.homeRunsPer9
+  // Don't fully trust HR/9 until ~50 IP (Scherzer 22 IP problem).
+  const sampleWeight = profile.inningsPitched / (profile.inningsPitched + 50)
+  const shrunkHr9 = sampleWeight * rawHr9 + (1 - sampleWeight) * LEAGUE_HR_PER_9
 
-  // Small assist from raw HR volume once IP is meaningful.
-  const volumeAssist = clamp01((profile.homeRuns - 8) / 20) * 10
-  let score = clamp(rateScore * 0.9 + volumeAssist, 0, 100)
+  const rateScore = clamp01((shrunkHr9 - 0.7) / 1.9) * 100
+  const volumeAssist =
+    profile.inningsPitched >= 40
+      ? clamp01((profile.homeRuns - 8) / 20) * 8
+      : 0
+  const score = clamp(rateScore * 0.92 + volumeAssist, 0, 100)
 
-  // Shrink extreme readings with thin innings toward neutral.
   if (profile.inningsPitched < 40) {
-    const sampleWeight = profile.inningsPitched / 40
-    score = score * sampleWeight + 50 * (1 - sampleWeight)
-  }
-
-  if (hrPer9 >= 2.0 && profile.inningsPitched >= 40) {
     notes.push(
-      `HR-prone starter (${hrPer9.toFixed(2)} HR/9, ${profile.homeRuns} HR in ${profile.inningsPitched} IP)`,
+      `Pitcher HR/9 shrunk to league (raw ${rawHr9.toFixed(2)} → ${shrunkHr9.toFixed(2)} on ${profile.inningsPitched} IP)`,
     )
-  } else if (hrPer9 >= 1.5 && profile.inningsPitched >= 30) {
+  } else if (shrunkHr9 >= 1.7) {
     notes.push(
-      `Above-average HR allowed (${hrPer9.toFixed(2)} HR/9, ${profile.homeRuns} HR)`,
+      `HR-prone starter (${shrunkHr9.toFixed(2)} HR/9 shrunk, ${profile.homeRuns} HR in ${profile.inningsPitched} IP)`,
     )
-  } else if (profile.inningsPitched < 40) {
+  } else if (shrunkHr9 >= 1.4) {
     notes.push(
-      `Limited HR-allowed sample (${profile.homeRuns} HR in ${profile.inningsPitched} IP)`,
+      `Above-average HR allowed (${shrunkHr9.toFixed(2)} HR/9)`,
     )
   }
 
@@ -424,13 +535,16 @@ function computeConfidence(input: ScoreInput, pitches: ArsenalPitch[]): number {
 
   if (input.batterPitchStats && input.batterPitchStats.size > 0) score += 6
   if (input.pitcherPitchStats && input.pitcherPitchStats.size > 0) score += 6
-  if (input.pitcherHrAllowed && input.pitcherHrAllowed.inningsPitched >= 20) score += 8
+  if (input.pitcherHrAllowed && input.pitcherHrAllowed.inningsPitched >= 40) score += 8
+  else if (input.pitcherHrAllowed && input.pitcherHrAllowed.inningsPitched >= 20) score += 4
   if (input.pitcherHand && input.platoon) {
     const split =
       input.pitcherHand === 'L' ? input.platoon.vsLhp : input.platoon.vsRhp
-    if (split && split.plateAppearances >= 40) score += 10
-    else if (split && split.plateAppearances >= 20) score += 5
+    if (split && split.plateAppearances >= 40) score += 8
+    else if (split && split.plateAppearances >= 20) score += 4
   }
+  if (input.recentForm && input.recentForm.plateAppearances >= 25) score += 6
+  if (input.durability && input.durability.startsSampled >= 3) score += 4
 
   return clamp(score, 0, 100)
 }
@@ -445,5 +559,13 @@ function clamp(value: number, min: number, max: number): number {
 
 function round1(value: number): number {
   return Math.round(value * 10) / 10
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000
 }
 

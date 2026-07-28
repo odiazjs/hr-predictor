@@ -1,7 +1,7 @@
 import type { HrPrediction } from '../types/predictions'
 
 /** Bump when scoring formula or payload shape changes. */
-export const PREDICTION_CACHE_VERSION = 4
+export const PREDICTION_CACHE_VERSION = 5
 
 export interface CachedGamePredictions {
   version: number

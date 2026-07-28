@@ -1,4 +1,7 @@
 import { fetchBatterPlatoonSplitsMap } from '../mlb/batterPlatoonSplits.ts'
+import { fetchBatterRecentFormMap } from '../mlb/batterRecentForm.ts'
+import { venueHrPrior } from '../mlb/parkFallback.ts'
+import { fetchPitcherDurabilityMap } from '../mlb/pitcherDurability.ts'
 import {
   enrichPitcherHrAllowedMap,
   fetchPitcherHrAllowedMap,
@@ -7,12 +10,16 @@ import { fetchMlbSchedule, type MlbGame, type LineupPlayer } from '../mlb/schedu
 import { fetchAsOfPlayerStats } from '../savant/asOfPlayerStats.ts'
 import { fetchPitcherArsenal, type PitcherArsenal } from '../savant/pitchArsenal.ts'
 import { fetchSwingPathMap, type SwingPathProfile } from '../savant/swingPath.ts'
-import { scoreBatterMatchup } from '../scoring/hrScore.ts'
+import { applyAntiStacking, scoreBatterMatchup } from '../scoring/hrScore.ts'
 import { seasonFromDate, statsAsOfDate, todayInEastern } from '../utils/date.ts'
 
 export interface HrPrediction {
   rank: number
+  /** Board rank key: expected HR chance scaled (expectedHrChance * 1000). */
   score: number
+  matchupScore: number
+  expectedHrChance: number
+  projectedPa: number
   batterId: number
   batterName: string
   batSide: 'L' | 'R'
@@ -24,6 +31,7 @@ export interface HrPrediction {
   matchup: string
   stadium: string
   venueId: number
+  parkHrFactor: number
   pitcherId: number | null
   pitcherName: string | null
   pitcherHand: 'L' | 'R' | null
@@ -31,6 +39,17 @@ export interface HrPrediction {
     homeRuns: number | null
     homeRunsPer9: number | null
     inningsPitched: number | null
+  }
+  durability: {
+    factor: number | null
+    avgInnings: number | null
+    earlyExitRate: number | null
+  }
+  recentForm: {
+    plateAppearances: number | null
+    homeRuns: number | null
+    slg: number | null
+    formScore: number | null
   }
   platoon: {
     vsHand: 'L' | 'R' | null
@@ -69,6 +88,12 @@ export interface HrPrediction {
     arsenalMatch: number
     pitcherHrAllowed: number
     platoonSplit: number
+    recentForm: number
+    parkBoost: number
+    matchupScore: number
+    durabilityFactor: number
+    projectedPa: number
+    expectedHrChance: number
     confidence: number
     notes: string[]
   }
@@ -170,7 +195,9 @@ async function scoreGamesForDate(
     )
   }
 
-  warnings.push('Park factor is not used; scoring confirmed lineups only.')
+  warnings.push(
+    'Ranked by expected HR chance tonight (matchup × projected PAs × starter durability), with park as a small input.',
+  )
 
   if (games.length === 0) {
     return {
@@ -222,25 +249,28 @@ async function scoreGamesForDate(
     }
   }
 
-  const [swingMap, pitcherHrSeed, arsenalEntries, platoonMap] = await Promise.all([
-    fetchSwingPathMap(season, { endDate: statsAsOf }),
-    fetchPitcherHrAllowedMap(season, { endDate: statsAsOf }),
-    Promise.all(
-      pitcherIds.map(async (pitcherId) => {
-        try {
-          return [pitcherId, await fetchPitcherArsenal(pitcherId, season)] as const
-        } catch (error) {
-          warnings.push(
-            `Failed to load Pitch3D arsenal for pitcher ${pitcherId}: ${
-              error instanceof Error ? error.message : 'unknown error'
-            }`,
-          )
-          return [pitcherId, null] as const
-        }
-      }),
-    ),
-    fetchBatterPlatoonSplitsMap(season, batterIds),
-  ])
+  const [swingMap, pitcherHrSeed, arsenalEntries, platoonMap, recentFormMap, durabilityMap] =
+    await Promise.all([
+      fetchSwingPathMap(season, { endDate: statsAsOf }),
+      fetchPitcherHrAllowedMap(season, { endDate: statsAsOf }),
+      Promise.all(
+        pitcherIds.map(async (pitcherId) => {
+          try {
+            return [pitcherId, await fetchPitcherArsenal(pitcherId, season)] as const
+          } catch (error) {
+            warnings.push(
+              `Failed to load Pitch3D arsenal for pitcher ${pitcherId}: ${
+                error instanceof Error ? error.message : 'unknown error'
+              }`,
+            )
+            return [pitcherId, null] as const
+          }
+        }),
+      ),
+      fetchBatterPlatoonSplitsMap(season, batterIds),
+      fetchBatterRecentFormMap(season, batterIds, statsAsOf),
+      fetchPitcherDurabilityMap(season, pitcherIds, statsAsOf),
+    ])
 
   const pitcherHrMap = await enrichPitcherHrAllowedMap(season, pitcherIds, pitcherHrSeed, {
     endDate: statsAsOf,
@@ -260,6 +290,9 @@ async function scoreGamesForDate(
       `MLB platoon splits loaded for ${platoonMap.size}/${batterIds.length} batters (vs LHP / vs RHP).`,
     )
     warnings.push(
+      `Recent form (~21d) loaded for ${recentFormMap.size}/${batterIds.length} batters; durability for ${durabilityMap.size}/${pitcherIds.length} pitchers.`,
+    )
+    warnings.push(
       `Date-bounded Statcast loaded for ${asOfStats.loadedBatters}/${batterIds.length} batters and ${asOfStats.loadedPitchers}/${pitcherIds.length} pitchers through ${statsAsOf}.`,
     )
   }
@@ -276,6 +309,7 @@ async function scoreGamesForDate(
   const predictions: HrPrediction[] = []
 
   for (const game of games) {
+    const parkHrFactor = venueHrPrior(game.venueId)
     const sides: Array<{
       lineup: LineupPlayer[]
       team: string
@@ -309,6 +343,7 @@ async function scoreGamesForDate(
         ? pitcherPitchStats.get(side.pitcher.id) ?? null
         : null
       const pitcherHr = side.pitcher ? pitcherHrMap.get(side.pitcher.id) ?? null : null
+      const durability = side.pitcher ? durabilityMap.get(side.pitcher.id) ?? null : null
 
       for (const batter of side.lineup) {
         const swing = swingMap.get(batter.id) ?? null
@@ -316,6 +351,7 @@ async function scoreGamesForDate(
         const expected = expectedMap.get(batter.id) ?? null
         const batterStats = batterPitchStats.get(batter.id) ?? null
         const platoon = platoonMap.get(batter.id) ?? null
+        const recentForm = recentFormMap.get(batter.id) ?? null
         const pitcherHand = arsenal?.pitchHand ?? null
         const batSide = resolveBatSide(swing, platoon?.batSide, pitcherHand)
 
@@ -328,8 +364,12 @@ async function scoreGamesForDate(
           batterPitchStats: batterStats,
           pitcherHrAllowed: pitcherHr,
           platoon,
+          recentForm,
+          durability,
           batSide,
           pitcherHand,
+          battingOrder: batter.battingOrder,
+          parkHrFactor,
         })
 
         const vsSplit =
@@ -372,6 +412,9 @@ async function scoreGamesForDate(
         predictions.push({
           rank: 0,
           score: scored.score,
+          matchupScore: scored.matchupScore,
+          expectedHrChance: scored.expectedHrChance,
+          projectedPa: scored.breakdown.projectedPa,
           batterId: batter.id,
           batterName: batter.fullName,
           batSide,
@@ -383,6 +426,7 @@ async function scoreGamesForDate(
           matchup: `${game.awayTeam.abbreviation} @ ${game.homeTeam.abbreviation}`,
           stadium: game.venueName,
           venueId: game.venueId,
+          parkHrFactor,
           pitcherId: side.pitcher?.id ?? null,
           pitcherName: side.pitcher?.fullName ?? null,
           pitcherHand,
@@ -390,6 +434,17 @@ async function scoreGamesForDate(
             homeRuns: pitcherHr?.homeRuns ?? null,
             homeRunsPer9: pitcherHr ? round2(pitcherHr.homeRunsPer9) : null,
             inningsPitched: pitcherHr?.inningsPitched ?? null,
+          },
+          durability: {
+            factor: durability?.durabilityFactor ?? null,
+            avgInnings: durability?.avgInnings ?? null,
+            earlyExitRate: durability?.earlyExitRate ?? null,
+          },
+          recentForm: {
+            plateAppearances: recentForm?.plateAppearances ?? null,
+            homeRuns: recentForm?.homeRuns ?? null,
+            slg: recentForm ? round3(recentForm.slg) : null,
+            formScore: recentForm?.formScore ?? null,
           },
           platoon: {
             vsHand: pitcherHand,
@@ -432,7 +487,21 @@ async function scoreGamesForDate(
     }
   }
 
-  predictions.sort((a, b) => b.score - a.score)
+  // Soft anti-stacking across batters facing the same starter.
+  const scaledChances = applyAntiStacking(
+    predictions.map((prediction) => ({
+      expectedHrChance: prediction.expectedHrChance,
+      pitcherId: prediction.pitcherId,
+    })),
+  )
+  predictions.forEach((prediction, index) => {
+    const chance = scaledChances[index]
+    prediction.expectedHrChance = round4(chance)
+    prediction.score = round1(chance * 1000)
+    prediction.breakdown.expectedHrChance = round4(chance)
+  })
+
+  predictions.sort((a, b) => b.expectedHrChance - a.expectedHrChance)
   predictions.forEach((prediction, index) => {
     prediction.rank = index + 1
   })
@@ -449,6 +518,10 @@ async function scoreGamesForDate(
     gamePk: games.length === 1 ? games[0].gamePk : undefined,
     lineupFingerprint: games.length === 1 ? lineupFingerprint(games[0]) : undefined,
   }
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000
 }
 
 export function lineupFingerprint(game: MlbGame): string {

@@ -1,6 +1,10 @@
 export interface HrPrediction {
   rank: number
+  /** Board rank key: expected HR chance scaled (expectedHrChance * 1000). */
   score: number
+  matchupScore: number
+  expectedHrChance: number
+  projectedPa: number
   batterId: number
   batterName: string
   batSide: 'L' | 'R'
@@ -12,6 +16,7 @@ export interface HrPrediction {
   matchup: string
   stadium: string
   venueId: number
+  parkHrFactor: number
   pitcherId: number | null
   pitcherName: string | null
   pitcherHand: 'L' | 'R' | null
@@ -19,6 +24,17 @@ export interface HrPrediction {
     homeRuns: number | null
     homeRunsPer9: number | null
     inningsPitched: number | null
+  }
+  durability: {
+    factor: number | null
+    avgInnings: number | null
+    earlyExitRate: number | null
+  }
+  recentForm: {
+    plateAppearances: number | null
+    homeRuns: number | null
+    slg: number | null
+    formScore: number | null
   }
   platoon: {
     vsHand: 'L' | 'R' | null
@@ -57,6 +73,12 @@ export interface HrPrediction {
     arsenalMatch: number
     pitcherHrAllowed: number
     platoonSplit: number
+    recentForm: number
+    parkBoost: number
+    matchupScore: number
+    durabilityFactor: number
+    projectedPa: number
+    expectedHrChance: number
     confidence: number
     notes: string[]
   }

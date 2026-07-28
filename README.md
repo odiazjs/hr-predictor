@@ -13,7 +13,17 @@ React + Vite + TypeScript app that ranks today's MLB ballparks by home-run park 
 5. Opposing SP location/usage from Savant Pitch3D archetype feed (`/app/archetype/{id}`)
 6. Opposing SP HR allowed / HR/9 from [MLB HR Allowed leaders](https://www.mlb.com/stats/pitching/home-runs-allowed)
 7. Batter vs LHP / vs RHP splits from MLB Stats API
-8. Score = pitch-type matchup (35%) × platoon splits (25%) × pitcher HR/9 (25%) × power (15%)
+8. Rank by **expected HR chance tonight** (not raw matchup score)
+
+Scoring model highlights:
+
+- **Matchup score** (~pitch-type 30% · platoon 22% · shrunk HR/9 18% · power 12% · park 10% · recent form 8%)
+- **HR/9 shrinkage** toward league average until ~50 IP
+- **Opportunity**: projected PAs vs starter by batting order × starter durability
+- **Durability**: short recent outings / early exits reduce PA projection
+- **Recent form**: ~21-day SLG/HR window
+- **Anti-stacking**: soft-cap shared expected HRs vs the same starter
+- **Park**: ~10% of matchup quality (not the main driver)
 
 Player stats are cut off through the prior day (`statsAsOf`) so historical boards exclude same-day results.
 
